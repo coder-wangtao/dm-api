@@ -1,128 +1,105 @@
 use async_trait::async_trait;
-use bytes::Bytes;
-use serde_json::{json, Value};
-use std::time::Duration;
+use super::*;
 
-use super::{error_message, join_url, usage_of, Adaptor, ForwardBody, Forwarded};
-use crate::core::dispatcher;
-use crate::db::models::Channel;
-
-pub struct OpenAiAdaptor;
+pub struct OpenAIAdaptor;
 
 #[async_trait]
-impl Adaptor for OpenAiAdaptor {
-    async fn test(&self, client: &reqwest::Client, channel: &Channel) -> Result<String, String> {
-        test_models(client, channel, "models").await
+impl Adaptor for OpenAIAdaptor {
+    fn channel_type(&self) -> &'static str { "openai" }
+    fn default_models(&self) -> Vec<&'static str> { vec!["gpt-5.4", "gpt-5.5", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"] }
+    fn default_base_url(&self) -> &str { "https://api.openai.com/v1" }
+
+    async fn test(&self, config: &ChannelConfig) -> Result<TestResult, anyhow::Error> {
+        let start = std::time::Instant::now();
+        let url = format!("{}/models", config.base_url.trim_end_matches('/'));
+        
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) => {
+                let latency = start.elapsed().as_millis() as u64;
+                if r.status().is_success() {
+                    Ok(TestResult { success: true, message: "连接成功".to_string(), latency_ms: latency })
+                } else {
+                    let status = r.status();
+                    let body = r.text().await.unwrap_or_default();
+                    Ok(TestResult { success: false, message: format!("HTTP {}: {}", status, body.chars().take(200).collect::<String>()), latency_ms: latency })
+                }
+            }
+            Err(e) => {
+                let latency = start.elapsed().as_millis() as u64;
+                Ok(TestResult { success: false, message: format!("连接失败: {}", e), latency_ms: latency })
+            }
+        }
     }
 
     async fn forward(
         &self,
-        client: &reqwest::Client,
-        channel: &Channel,
-        body: &Value,
-    ) -> Result<Forwarded, String> {
-        forward_chat(client, channel, body, "chat/completions").await
-    }
-}
+        request: &ProxyRequest,
+        config: &ChannelConfig,
+    ) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let body = apply_model_mapping(&request.body, &config.model_mapping);
 
-pub async fn test_models(
-    client: &reqwest::Client,
-    channel: &Channel,
-    path: &str,
-) -> Result<String, String> {
-    if channel.base_url.trim().is_empty() {
-        return Err("缺少 Base URL".into());
-    }
-    if channel.api_key.trim().is_empty() {
-        return Err("缺少 API Key".into());
-    }
-    let response = client
-        .get(join_url(&channel.base_url, path))
-        .timeout(Duration::from_secs(20))
-        .bearer_auth(channel.api_key.trim())
-        .send()
-        .await
-        .map_err(|err| format!("连接失败：{err}"))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("读取响应失败：{err}"))?;
-    if !status.is_success() {
-        let raw = String::from_utf8_lossy(&bytes);
-        return Err(error_message(status.as_u16(), None, &raw).unwrap_or_else(|| "测试失败".into()));
-    }
-    let value: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-    let count = value["data"].as_array().map(|items| items.len()).unwrap_or(0);
-    Ok(format!("连接成功，上游返回 {count} 个模型"))
-}
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
 
-pub async fn forward_chat(
-    client: &reqwest::Client,
-    channel: &Channel,
-    body: &Value,
-    path: &str,
-) -> Result<Forwarded, String> {
-    let model = body
-        .get("model")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let mut payload = body.clone();
-    payload["model"] = json!(dispatcher::upstream_model(channel, model));
-    let stream = payload.get("stream").and_then(|value| value.as_bool()).unwrap_or(false);
+        let status = resp.status().as_u16();
+        let json: serde_json::Value = resp.json().await?;
 
-    let response = client
-        .post(join_url(&channel.base_url, path))
-        .bearer_auth(channel.api_key.trim())
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|err| format!("上游请求失败：{err}"))?;
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or(if stream {
-            "text/event-stream"
-        } else {
-            "application/json"
-        })
-        .to_string();
-
-    if stream && status < 400 {
-        return Ok(Forwarded {
-            status,
-            content_type,
-            body: ForwardBody::Stream(response),
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            error_message: None,
+        let usage = json.get("usage").and_then(|u| {
+            Some(TokenUsage {
+                prompt_tokens: u.get("prompt_tokens")?.as_u64()?,
+                completion_tokens: u.get("completion_tokens")?.as_u64()?,
+                total_tokens: u.get("total_tokens")?.as_u64()?,
+            })
         });
+
+        Ok((status, json, usage))
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("读取上游响应失败：{err}"))?;
-    buffered(status, content_type, bytes)
+    async fn forward_stream(
+        &self,
+        request: &ProxyRequest,
+        config: &ChannelConfig,
+    ) -> Result<reqwest::Response, anyhow::Error> {
+        let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+        let body = apply_model_mapping(&request.body, &config.model_mapping);
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        Ok(resp)
+    }
 }
 
-pub fn buffered(status: u16, content_type: String, bytes: Bytes) -> Result<Forwarded, String> {
-    let raw = String::from_utf8_lossy(&bytes).to_string();
-    let value = serde_json::from_slice::<Value>(&bytes).ok();
-    let (prompt_tokens, completion_tokens, total_tokens) = value
-        .as_ref()
-        .map(usage_of)
-        .unwrap_or((0, 0, 0));
-    Ok(Forwarded {
-        status,
-        content_type,
-        error_message: error_message(status, value.as_ref(), &raw),
-        body: ForwardBody::Bytes(bytes),
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-    })
+pub fn apply_model_mapping(body: &serde_json::Value, mapping: &serde_json::Value) -> serde_json::Value {
+    if mapping.is_null() || !mapping.is_object() {
+        return body.clone();
+    }
+    let mut body = body.clone();
+    if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
+        if let Some(mapped) = mapping.get(model).and_then(|m| m.as_str()) {
+            body["model"] = serde_json::Value::String(mapped.to_string());
+        }
+    }
+    body
 }

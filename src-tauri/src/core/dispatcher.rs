@@ -1,58 +1,88 @@
+use crate::adaptor::ChannelConfig;
 use crate::db::models::Channel;
-use rand::Rng;
 
-pub fn select<'a>(
-    channels: &'a [Channel],
-    model: &str,
-    allowed: &[String],
-    exclude: &[String],
-) -> Result<&'a Channel, String> {
-    let mut matched: Vec<&Channel> = channels
-        .iter()
-        .filter(|channel| {
-            channel.status == 1
-                && !exclude.iter().any(|id| id == &channel.id)
-                && (allowed.is_empty() || allowed.iter().any(|id| id == &channel.id))
-                && supports(channel, model)
-        })
-        .collect();
+pub struct Dispatcher;
 
-    if matched.is_empty() {
-        if channels.iter().any(|channel| channel.status == 1) {
-            return Err(format!("没有可用渠道支持模型 {model}"));
+impl Dispatcher {
+    /// Build an ordered failover queue based on priority, weight, and model support
+    pub fn select_channels(channels: &[Channel], requested_model: &str) -> Vec<Channel> {
+        let mut candidates: Vec<Channel> = channels
+            .iter()
+            .filter(|c| {
+                if c.status != 1 {
+                    return false;
+                }
+                let models: Vec<String> = serde_json::from_str(&c.models).unwrap_or_default();
+                if models.is_empty() || models.iter().any(|m| m == requested_model) {
+                    return true;
+                }
+                // Also check model_mapping keys — mapped model names are also accepted
+                let mapping: serde_json::Value =
+                    serde_json::from_str(&c.model_mapping).unwrap_or(serde_json::Value::Object(Default::default()));
+                if let Some(obj) = mapping.as_object() {
+                    return obj.contains_key(requested_model);
+                }
+                false
+            })
+            .cloned()
+            .collect();
+
+        if candidates.is_empty() {
+            return Vec::new();
         }
-        return Err("没有启用的渠道".into());
+
+        candidates.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.weight.cmp(&a.weight)));
+
+        let mut ordered = Vec::with_capacity(candidates.len());
+        let mut start = 0;
+
+        while start < candidates.len() {
+            let priority = candidates[start].priority;
+            let mut end = start;
+            while end < candidates.len() && candidates[end].priority == priority {
+                end += 1;
+            }
+
+            let mut group = candidates[start..end].to_vec();
+            let mut rng = rand::rng();
+
+            while !group.is_empty() {
+                let total_weight: i64 = group.iter().map(|c| c.weight.max(0)).sum();
+                let index = if total_weight > 0 {
+                    let mut point = rand::Rng::random_range(&mut rng, 0..total_weight);
+                    let mut selected = 0;
+                    for (idx, channel) in group.iter().enumerate() {
+                        point -= channel.weight.max(0);
+                        if point < 0 {
+                            selected = idx;
+                            break;
+                        }
+                    }
+                    selected
+                } else {
+                    0
+                };
+
+                ordered.push(group.remove(index));
+            }
+
+            start = end;
+        }
+
+        ordered
     }
 
-    let max_priority = matched.iter().map(|channel| channel.priority).max().unwrap_or(0);
-    matched.retain(|channel| channel.priority == max_priority);
-    Ok(pick_weighted(&matched))
-}
+    pub fn channel_to_config(channel: &Channel) -> ChannelConfig {
+        let models: Vec<String> = serde_json::from_str(&channel.models).unwrap_or_default();
+        let model_mapping: serde_json::Value = serde_json::from_str(&channel.model_mapping).unwrap_or(serde_json::Value::Object(Default::default()));
+        let extra: serde_json::Value = serde_json::from_str(&channel.config).unwrap_or(serde_json::Value::Object(Default::default()));
 
-pub fn supports(channel: &Channel, model: &str) -> bool {
-    channel.models.is_empty()
-        || channel.models.iter().any(|item| item == model)
-        || channel.model_mapping.contains_key(model)
-}
-
-pub fn upstream_model(channel: &Channel, model: &str) -> String {
-    channel
-        .model_mapping
-        .get(model)
-        .cloned()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| model.to_string())
-}
-
-fn pick_weighted<'a>(channels: &[&'a Channel]) -> &'a Channel {
-    let total: i64 = channels.iter().map(|channel| channel.weight.max(1)).sum();
-    let mut cursor = rand::rng().random_range(0..total.max(1));
-    for channel in channels {
-        let weight = channel.weight.max(1);
-        if cursor < weight {
-            return channel;
+        ChannelConfig {
+            base_url: channel.base_url.clone(),
+            api_key: channel.api_key.clone(),
+            models,
+            model_mapping,
+            extra,
         }
-        cursor -= weight;
     }
-    channels[0]
 }

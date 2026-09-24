@@ -1,3 +1,4 @@
+-- WaLiAPI database initialization
 
 -- 渠道表
 CREATE TABLE IF NOT EXISTS channels (
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 -- 请求日志表
 CREATE TABLE IF NOT EXISTS request_logs (
     id                TEXT PRIMARY KEY,
+    seq               INTEGER NOT NULL DEFAULT 0,   
     api_key_id        TEXT,
     api_key_name      TEXT,
     channel_id        TEXT,

@@ -10,7 +10,6 @@ pub struct Database {
 
 impl Database {
     pub async fn new(app: &AppHandle) -> Self {
-        // 获取应用数据目录（macOS: ~/Library/Application Support/com.waliapi.app）
         let app_data_dir = app
             .path()
             .app_data_dir()
@@ -18,7 +17,6 @@ impl Database {
 
         std::fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
 
-        // mode=rwc：不存在则创建
         let db_path = app_data_dir.join("waliapi.db");
         let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
@@ -28,11 +26,14 @@ impl Database {
             .await
             .expect("failed to connect to database");
 
-        // 执行 migrations（编译时嵌入 SQL 文件）
+        // Run migrations
         sqlx::migrate!("./migrations")
             .run(&pool)
             .await
             .ok();
+
+        // Seed built-in security rules if table exists and is empty
+        let _ = crate::security::rules::seed_builtin_rules(&pool).await;
 
         Self { pool }
     }

@@ -1,93 +1,63 @@
-pub mod admin_auth;
-pub mod channel_test;
-pub mod knowledge;
-pub mod mcp;
-pub mod upstream_models;
-pub mod wiki;
+pub mod router;
+pub mod handlers;
 
-use crate::server::router::SharedState;
 use crate::AppState;
-use async_trait::async_trait;
-use axum::Router;
-use serde::Serialize;
-use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_store::StoreExt;
 
-/// Service trait — all services implement this interface
-#[async_trait]
-pub trait Service: Send + Sync {
-    /// Service unique id
-    fn id(&self) -> &'static str;
-    /// Display name
-    fn name(&self) -> &'static str;
-    /// Description
-    fn description(&self) -> &'static str;
-    /// Whether enabled
-    fn enabled(&self) -> bool {
-        true
-    }
-    /// Service status
-    async fn status(&self, state: &Arc<AppState>) -> ServiceStatus;
-    /// Register routes
-    fn routes(&self, state: Arc<AppState>) -> Router<SharedState>;
+pub async fn start_server(app: AppHandle, state: std::sync::Arc<AppState>) -> Result<(), anyhow::Error> {
+    let host = get_server_host(&app);
+    let port = get_server_port(&app);
+
+    let addr = format!("{}:{}", host, port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let local_addr = listener.local_addr()?;
+    let actual_port = local_addr.port();
+
+    *state.server_port.write().await = actual_port;
+    state.server_running.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let router = router::create_router(app.clone(), state.clone());
+
+    app.emit(
+        "server-started",
+        serde_json::json!({
+            "port": actual_port,
+            "url": format!("http://{}:{}", host, actual_port)
+        }),
+    )
+    .ok();
+
+    tracing::info!("WaLiAPI server listening on http://{}:{}", host, actual_port);
+
+    axum::serve(listener, router).await?;
+
+    state.server_running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    Ok(())
 }
 
-#[derive(Debug, Serialize)]
-pub struct ServiceStatus {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub enabled: bool,
-    pub running: bool,
-    pub stats: serde_json::Value,
-}
-
-/// Service manager
-pub struct ServiceRegistry {
-    services: Vec<Box<dyn Service>>,
-}
-
-impl ServiceRegistry {
-    pub fn new() -> Self {
-        let mut registry = Self { services: vec![] };
-        registry.register(Box::new(knowledge::KnowledgeService));
-        registry.register(Box::new(mcp::McpService));
-        registry.register(Box::new(wiki::WikiService));
-        registry
-    }
-
-    pub fn register(&mut self, service: Box<dyn Service>) {
-        self.services.push(service);
-    }
-
-    /// Merge all service routes into one Router
-    pub fn merge_routes(&self, state: Arc<AppState>) -> Router<SharedState> {
-        let mut router = Router::new();
-        for service in &self.services {
-            if service.enabled() {
-                router = router.merge(service.routes(state.clone()));
+fn get_server_host(app: &AppHandle) -> String {
+    if let Ok(store) = app.store("settings.json") {
+        if let Some(host) = store.get("server.host") {
+            if let Some(value) = host.as_str() {
+                let trimmed = value.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_string();
+                }
             }
         }
-        router
     }
+    "127.0.0.1".to_string()
+}
 
-    /// 合并指定服务（按 id）的路由。服务端点按鉴权域分组装配：
-    /// knowledge/wiki 挂管理员 token、mcp 挂独立 MCP token，见 router::build_router。
-    pub fn merge_routes_for(&self, ids: &[&str], state: Arc<AppState>) -> Router<SharedState> {
-        let mut router = Router::new();
-        for service in &self.services {
-            if service.enabled() && ids.contains(&service.id()) {
-                router = router.merge(service.routes(state.clone()));
+fn get_server_port(app: &AppHandle) -> u16 {
+    if let Ok(store) = app.store("settings.json") {
+        if let Some(port) = store.get("server.port") {
+            if let Some(value) = port.as_u64() {
+                return value as u16;
             }
         }
-        router
     }
-
-    /// Get all service statuses
-    pub async fn list_status(&self, state: &Arc<AppState>) -> Vec<ServiceStatus> {
-        let mut result = vec![];
-        for service in &self.services {
-            result.push(service.status(state).await);
-        }
-        result
-    }
+    8777
 }

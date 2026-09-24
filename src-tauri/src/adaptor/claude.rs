@@ -1,162 +1,180 @@
 use async_trait::async_trait;
-use bytes::Bytes;
-use serde_json::{json, Value};
-use std::time::Duration;
-
-use super::{clip_error, join_url, Adaptor, Forwarded};
-use crate::core::dispatcher;
-use crate::db::models::Channel;
-
-const ANTHROPIC_VERSION: &str = "2023-06-01";
+use super::*;
 
 pub struct ClaudeAdaptor;
 
 #[async_trait]
 impl Adaptor for ClaudeAdaptor {
-    async fn test(&self, client: &reqwest::Client, channel: &Channel) -> Result<String, String> {
-        if channel.api_key.trim().is_empty() {
-            return Err("缺少 API Key".into());
+    fn channel_type(&self) -> &'static str { "claude" }
+    fn default_models(&self) -> Vec<&'static str> { vec!["claude-sonnet-4-20250514", "claude-3-7-sonnet-20250219", "claude-3-5-haiku-20241022"] }
+    fn default_base_url(&self) -> &str { "https://api.anthropic.com" }
+
+    async fn test(&self, config: &ChannelConfig) -> Result<TestResult, anyhow::Error> {
+        let start = std::time::Instant::now();
+        let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+        let body = serde_json::json!({
+            "model": config.models.first().map(|s| s.as_str()).unwrap_or("claude-3-5-haiku-20241022"),
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let client = reqwest::Client::new();
+        match client.post(&url)
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(10))
+            .send().await {
+            Ok(r) => {
+                let latency = start.elapsed().as_millis() as u64;
+                if r.status().is_success() || r.status().as_u16() == 400 {
+                    Ok(TestResult { success: true, message: "连接成功".to_string(), latency_ms: latency })
+                } else {
+                    Ok(TestResult { success: false, message: format!("HTTP {}", r.status()), latency_ms: latency })
+                }
+            }
+            Err(e) => Ok(TestResult { success: false, message: format!("连接失败: {}", e), latency_ms: start.elapsed().as_millis() as u64 }),
         }
-        let response = client
-            .get(versioned(&channel.base_url, "models"))
-            .timeout(Duration::from_secs(20))
-            .header("x-api-key", channel.api_key.trim())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .send()
-            .await
-            .map_err(|err| format!("连接失败：{err}"))?;
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(clip_error(&format!("上游返回 {}：{text}", status.as_u16())));
-        }
-        let value: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({}));
-        let count = value["data"].as_array().map(|items| items.len()).unwrap_or(0);
-        Ok(format!("连接成功，上游返回 {count} 个模型"))
     }
 
-    async fn forward(
-        &self,
-        client: &reqwest::Client,
-        channel: &Channel,
-        body: &Value,
-    ) -> Result<Forwarded, String> {
-        let model = body.get("model").and_then(|value| value.as_str()).unwrap_or("");
-        let upstream = dispatcher::upstream_model(channel, model);
-        let payload = to_claude(body, &upstream);
-        let response = client
-            .post(versioned(&channel.base_url, "messages"))
-            .header("x-api-key", channel.api_key.trim())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|err| format!("上游请求失败：{err}"))?;
-        let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| format!("读取上游响应失败：{err}"))?;
-        let converted = if status < 400 {
-            match serde_json::from_slice::<Value>(&bytes) {
-                Ok(value) => Bytes::from(from_claude(&value, &upstream).to_string()),
-                Err(_) => bytes,
+    async fn forward(&self, request: &ProxyRequest, config: &ChannelConfig) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error> {
+        let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+        let openai_body = &request.body;
+        
+        // Convert OpenAI format to Claude format
+        let model = openai_body.get("model").and_then(|m| m.as_str()).unwrap_or("claude-3-5-haiku-20241022");
+        let messages = openai_body.get("messages").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+        let max_tokens = openai_body.get("max_tokens").and_then(|m| m.as_u64()).unwrap_or(4096);
+        let temperature = openai_body.get("temperature").cloned();
+        let stream = openai_body.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+        
+        // Extract system message if present
+        let (system, claude_messages) = convert_openai_messages_to_claude(&messages);
+        
+        let mut claude_body = serde_json::json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": claude_messages,
+            "stream": stream,
+        });
+        if let Some(sys) = system {
+            claude_body["system"] = serde_json::Value::String(sys);
+        }
+        if let Some(temp) = temperature {
+            claude_body["temperature"] = temp;
+        }
+
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&claude_body)
+            .send().await?;
+
+        let status = resp.status().as_u16();
+        let claude_json: serde_json::Value = resp.json().await?;
+
+        // Convert Claude response to OpenAI format
+        let openai_response = convert_claude_to_openai(&claude_json, model);
+        let usage = openai_response.get("usage").and_then(|u| Some(TokenUsage {
+            prompt_tokens: u.get("prompt_tokens")?.as_u64()?,
+            completion_tokens: u.get("completion_tokens")?.as_u64()?,
+            total_tokens: u.get("total_tokens")?.as_u64()?,
+        }));
+
+        Ok((status, openai_response, usage))
+    }
+
+    async fn forward_stream(&self, request: &ProxyRequest, config: &ChannelConfig) -> Result<reqwest::Response, anyhow::Error> {
+        let url = format!("{}/v1/messages", config.base_url.trim_end_matches('/'));
+        let openai_body = &request.body;
+        let model = openai_body.get("model").and_then(|m| m.as_str()).unwrap_or("claude-3-5-haiku-20241022");
+        let messages = openai_body.get("messages").cloned().unwrap_or(serde_json::Value::Array(vec![]));
+        let max_tokens = openai_body.get("max_tokens").and_then(|m| m.as_u64()).unwrap_or(4096);
+        let (system, claude_messages) = convert_openai_messages_to_claude(&messages);
+        
+        let mut claude_body = serde_json::json!({
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": claude_messages,
+            "stream": true,
+        });
+        if let Some(sys) = system {
+            claude_body["system"] = serde_json::Value::String(sys);
+        }
+
+        let client = reqwest::Client::new();
+        let resp = client.post(&url)
+            .header("x-api-key", &config.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json")
+            .json(&claude_body)
+            .send().await?;
+
+        Ok(resp)
+    }
+}
+
+fn convert_openai_messages_to_claude(messages: &serde_json::Value) -> (Option<String>, serde_json::Value) {
+    let msgs = match messages.as_array() {
+        Some(arr) => arr,
+        None => return (None, serde_json::Value::Array(vec![])),
+    };
+
+    let mut system = None;
+    let mut claude_msgs = Vec::new();
+
+    for msg in msgs {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+        let content = msg.get("content").cloned().unwrap_or(serde_json::Value::String(String::new()));
+        
+        if role == "system" {
+            if let Some(s) = content.as_str() {
+                system = Some(s.to_string());
             }
         } else {
-            bytes
-        };
-        super::openai::buffered(status, "application/json".into(), converted)
-    }
-}
-
-fn versioned(base: &str, path: &str) -> String {
-    let base = base.trim().trim_end_matches('/');
-    if base.ends_with("/v1") {
-        join_url(base, path)
-    } else {
-        join_url(base, &format!("v1/{path}"))
-    }
-}
-
-fn to_claude(body: &Value, model: &str) -> Value {
-    let mut system = Vec::new();
-    let mut messages = Vec::new();
-    if let Some(items) = body.get("messages").and_then(|value| value.as_array()) {
-        for item in items {
-            let role = item.get("role").and_then(|value| value.as_str()).unwrap_or("user");
-            let text = content_text(item.get("content").unwrap_or(&Value::Null));
-            if role == "system" {
-                if !text.is_empty() {
-                    system.push(text);
-                }
-                continue;
-            }
-            let role = if role == "assistant" { "assistant" } else { "user" };
-            messages.push(json!({ "role": role, "content": text }));
+            claude_msgs.push(serde_json::json!({
+                "role": if role == "assistant" { "assistant" } else { "user" },
+                "content": content,
+            }));
         }
     }
-    if messages.is_empty() {
-        messages.push(json!({ "role": "user", "content": "ping" }));
-    }
-    let max_tokens = body
-        .get("max_tokens")
-        .and_then(|value| value.as_i64())
-        .or_else(|| body.get("max_completion_tokens").and_then(|value| value.as_i64()))
-        .unwrap_or(1024)
-        .clamp(1, 8192);
-    let mut payload = json!({
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    });
-    if !system.is_empty() {
-        payload["system"] = json!(system.join("\n"));
-    }
-    payload
+
+    (system, serde_json::Value::Array(claude_msgs))
 }
 
-fn from_claude(value: &Value, model: &str) -> Value {
-    let text = value["content"]
-        .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|part| part["text"].as_str())
+fn convert_claude_to_openai(claude_json: &serde_json::Value, model: &str) -> serde_json::Value {
+    let content = claude_json.get("content")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
                 .collect::<Vec<_>>()
                 .join("")
         })
         .unwrap_or_default();
-    let prompt = value["usage"]["input_tokens"].as_i64().unwrap_or(0);
-    let completion = value["usage"]["output_tokens"].as_i64().unwrap_or(0);
-    json!({
-        "id": value["id"].as_str().unwrap_or("chatcmpl-claude"),
+
+    let prompt_tokens = claude_json.get("usage").and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+    let completion_tokens = claude_json.get("usage").and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+
+    serde_json::json!({
+        "id": claude_json.get("id").cloned().unwrap_or(serde_json::Value::String("chatcmpl-converted".to_string())),
         "object": "chat.completion",
+        "created": chrono::Utc::now().timestamp(),
         "model": model,
         "choices": [{
             "index": 0,
-            "message": { "role": "assistant", "content": text },
-            "finish_reason": "stop"
+            "message": {
+                "role": "assistant",
+                "content": content,
+            },
+            "finish_reason": "stop",
         }],
         "usage": {
-            "prompt_tokens": prompt,
-            "completion_tokens": completion,
-            "total_tokens": prompt + completion
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
         }
     })
-}
-
-fn content_text(content: &Value) -> String {
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    content
-        .as_array()
-        .map(|parts| {
-            parts
-                .iter()
-                .filter_map(|part| part.get("text").and_then(|value| value.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
 }

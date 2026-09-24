@@ -1,28 +1,37 @@
-use std::time::Duration;
+use axum::{
+    Router,
+    routing::{get, post},
+};
+use std::sync::Arc;
+use tauri::AppHandle;
+use tower_http::cors::{Any, CorsLayer};
+use crate::AppState;
+use super::handlers::*;
 
-use axum::routing::{get, post};
-use axum::Router;
-use tower_http::cors::CorsLayer;
+pub fn create_router(app: AppHandle, state: Arc<AppState>) -> Router {
+    let shared = SharedState { app: app.clone(), state: state.clone() };
 
-use super::handlers;
-use crate::core::proxy::GatewayState;
-use crate::db::Database;
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers(Any);
 
-pub fn build(db: Database) -> Router {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
-        .user_agent("damao-api/0.1.0")
-        .build()
-        .expect("创建 HTTP 客户端失败");
-    let state = GatewayState { db, client };
     Router::new()
-        .route("/health", get(handlers::health))
-        .route("/v1/chat/completions", post(handlers::chat_completions))
-        .route("/chat/completions", post(handlers::chat_completions))
-        .route("/v1/models", get(handlers::list_models))
-        .route("/models", get(handlers::list_models))
-        .fallback(handlers::not_found)
-        .layer(CorsLayer::permissive())
-        .with_state(state)
+        .route("/v1/chat/completions", post(handle_chat_completions))
+        .route("/v1/completions", post(handle_completions))
+        .route("/v1/embeddings", post(handle_embeddings))
+        .route("/v1/models", get(handle_list_models))
+        .route("/v1/images/generations", post(handle_images))
+        .route("/v1/audio/transcriptions", post(handle_audio_transcriptions))
+        .route("/v1/audio/speech", post(handle_audio_speech))
+        .route("/health", get(handle_health))
+        .layer(cors)
+        .with_state(shared)
+}
+
+#[derive(Clone)]
+pub struct SharedState {
+    pub app: AppHandle,
+    pub state: Arc<AppState>,
 }

@@ -111,9 +111,34 @@ function seed(): PreviewStore {
       },
     ],
     logs: [
-      log("1", "示例 · 本地调试", "示例 · OpenAI", "gpt-4o-mini", 200, 820, 180),
-      log("2", "示例 · 本地调试", "示例 · DeepSeek", "deepseek-chat", 200, 1460, 260),
-      log("3", "示例 · 本地调试", "示例 · OpenAI", "gpt-4o", 502, 0, 940, "上游暂时不可用"),
+      log(
+        "1",
+        "示例 · 本地调试",
+        "示例 · OpenAI",
+        "gpt-4o-mini",
+        200,
+        820,
+        180,
+      ),
+      log(
+        "2",
+        "示例 · 本地调试",
+        "示例 · DeepSeek",
+        "deepseek-chat",
+        200,
+        1460,
+        260,
+      ),
+      log(
+        "3",
+        "示例 · 本地调试",
+        "示例 · OpenAI",
+        "gpt-4o",
+        502,
+        0,
+        940,
+        "上游暂时不可用",
+      ),
     ],
   };
 }
@@ -158,7 +183,9 @@ function log(
 function newApiKey(): string {
   const bytes = new Uint8Array(24);
   crypto.getRandomValues(bytes);
-  const hex = [...bytes].map((item) => item.toString(16).padStart(2, "0")).join("");
+  const hex = [...bytes]
+    .map((item) => item.toString(16).padStart(2, "0"))
+    .join("");
   return `sk-waliapi-${hex}`;
 }
 
@@ -211,7 +238,9 @@ export const preview = {
   toggleChannel: async (id: string, status: number) => {
     update((store) => {
       store.channels = store.channels.map((channel) =>
-        channel.id === id ? { ...channel, status, updated_at: nowIso() } : channel,
+        channel.id === id
+          ? { ...channel, status, updated_at: nowIso() }
+          : channel,
       );
     });
   },
@@ -270,7 +299,8 @@ export const preview = {
         };
       });
     });
-    if (!store.apiKeys.some((key) => key.id === input.id)) throw new Error("密钥不存在");
+    if (!store.apiKeys.some((key) => key.id === input.id))
+      throw new Error("密钥不存在");
   },
   deleteApiKey: async (id: string) => {
     update((store) => {
@@ -282,7 +312,12 @@ export const preview = {
     const channel = input?.channel_name?.trim() ?? "";
     const model = input?.model?.trim() ?? "";
     return load().logs.filter((item) => {
-      const haystack = [item.channel_name, item.model, item.api_key_name, item.error_message]
+      const haystack = [
+        item.channel_name,
+        item.model,
+        item.api_key_name,
+        item.error_message,
+      ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
@@ -319,26 +354,38 @@ export const preview = {
     return [...grouped.values()]
       .map((item) => ({
         ...item,
-        avg_latency_ms: item.requests ? Math.round(item.avg_latency_ms / item.requests) : 0,
+        avg_latency_ms: item.requests
+          ? Math.round(item.avg_latency_ms / item.requests)
+          : 0,
       }))
       .sort((a, b) => a.date.localeCompare(b.date));
   },
   getDashboard: async (): Promise<DashboardStats> => {
     const store = load();
     const today = todayKey();
-    const todayLogs = store.logs.filter((item) => item.created_at.startsWith(today));
+    const todayLogs = store.logs.filter((item) =>
+      item.created_at.startsWith(today),
+    );
     const success = todayLogs.filter((item) => item.status_code < 400);
     const avg =
-      success.reduce((sum, item) => sum + item.duration_ms, 0) / (success.length || 1);
+      success.reduce((sum, item) => sum + item.duration_ms, 0) /
+      (success.length || 1);
     return {
       today_requests: todayLogs.length,
-      today_total_tokens: todayLogs.reduce((sum, item) => sum + item.total_tokens, 0),
-      active_channels: store.channels.filter((item) => item.status === 1).length,
+      today_total_tokens: todayLogs.reduce(
+        (sum, item) => sum + item.total_tokens,
+        0,
+      ),
+      active_channels: store.channels.filter((item) => item.status === 1)
+        .length,
       avg_latency_ms: success.length ? Math.round(avg) : 0,
       total_channels: store.channels.length,
       total_api_keys: store.apiKeys.length,
       total_requests: store.logs.length,
-      total_tokens: store.logs.reduce((sum, item) => sum + item.total_tokens, 0),
+      total_tokens: store.logs.reduce(
+        (sum, item) => sum + item.total_tokens,
+        0,
+      ),
     };
   },
   getSettings: async () => load().settings,
@@ -393,7 +440,8 @@ export const preview = {
     update((store) => {
       if (parsed.channels) store.channels = parsed.channels;
       if (parsed.api_keys) store.apiKeys = parsed.api_keys;
-      if (parsed.settings) store.settings = { ...DEFAULT_SETTINGS, ...parsed.settings };
+      if (parsed.settings)
+        store.settings = { ...DEFAULT_SETTINGS, ...parsed.settings };
     });
   },
 };
