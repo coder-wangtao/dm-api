@@ -1,138 +1,193 @@
-import { NavLink } from "react-router-dom";
-import { useEffect } from "react";
-import logo from "../../assets/logo.svg";
-import { isTauri } from "../../lib/runtime";
-import { useServerStatus } from "../../hooks/useServerStatus";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  LayoutDashboard,
+  BookOpen,
+  Radio,
+  Key,
+  ScrollText,
+  Settings,
+  Settings2,
+  Server,
+  ChevronRight,
+  ExternalLink,
+  Link,
+  Database,
+  LogOut,
+} from "lucide-react";
+import { serverApi } from "../../lib/api";
+import { isWebRuntime } from "../../lib/web";
+import type { ServerStatus } from "../../types";
+import packageJson from "../../../package.json";
 
-const items = [
-  { to: "/", label: "仪表盘", end: true, icon: DashboardIcon },
-  { to: "/usage", label: "用量", end: false, icon: UsageIcon },
-  { to: "/channels", label: "渠道", end: false, icon: ChannelIcon },
-  { to: "/api-keys", label: "密钥", end: false, icon: KeyIcon },
-  { to: "/logs", label: "日志", end: false, icon: LogIcon },
-  { to: "/settings", label: "设置", end: false, icon: SettingsIcon },
+const navItems = [
+  { to: "/", icon: LayoutDashboard, label: "仪表盘" },
+  { to: "/usage", icon: BookOpen, label: "使用", subLabel: "API、Codex ... 配置" },
+  { to: "/channels", icon: Radio, label: "渠道" },
+  { to: "/api-keys", icon: Key, label: "密钥" },
+  { to: "/services", icon: Database, label: "服务", subLabel: "RAG、Wiki、Prompt ..." },
+  { to: "/logs", icon: ScrollText, label: "日志" },
+  { to: "/settings", icon: Settings, label: "设置" },
 ];
 
-export function Sidebar() {
-  const status = useServerStatus((state) => state.status);
-  const refresh = useServerStatus((state) => state.refresh);
-  const preview = !isTauri();
+const githubUrl = "https://github.com/fuzhengwei/WaLiAPI";
+const appVersion = packageJson.version;
+
+/** Web 管理面板：清除会话并回到登录页（桌面端不渲染入口）。 */
+function webLogout() {
+  const token = localStorage.getItem("waliapi_admin_token");
+  void fetch("/admin/api/auth/logout", {
+    method: "POST",
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  }).catch(() => {});
+  localStorage.removeItem("waliapi_admin_token");
+  location.assign("/login");
+}
+
+export function Sidebar({
+  hasUpdate,
+  onCheckUpdate,
+}: {
+  hasUpdate: boolean;
+  onCheckUpdate: () => void;
+}) {
+  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
+  const location = useLocation();
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const running = status?.running ?? false;
+    serverApi.getStatus().then(setServerStatus).catch(() => {});
+    const interval = setInterval(() => {
+      serverApi.getStatus().then(setServerStatus).catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col bg-sidebar text-sidebar-ink">
-      <div className="flex items-center gap-3 px-5 py-6">
-        <img src={logo} alt="" className="h-9 w-9" />
-        <div>
-          <div className="text-sm font-semibold tracking-wide">大猫网关</div>
-          <div className="text-[11px] uppercase tracking-[0.16em] text-sidebar-muted">Local LLM</div>
+    <aside className="w-72 h-screen flex-col border-r border-slate-200 bg-[#eef3f8] px-3 py-3 hidden md:flex">
+      <div className="surface rounded-[22px] p-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
+            <img src="/logo.png" alt="WaLiAPI" className="h-full w-full object-cover" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[20px] font-bold tracking-[-0.04em] text-slate-900 leading-none">WaLiAPI</div>
+              <button
+                onClick={onCheckUpdate}
+                className={`relative rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  hasUpdate
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-600"
+                    : "border-blue-100 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                }`}
+              >
+                {hasUpdate && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                  </span>
+                )}
+                v{appVersion}
+              </button>
+            </div>
+            <div className="mt-1.5 text-[11px] font-medium text-slate-500">AI 网关 · 统一模型配置和负载</div>
+          </div>
         </div>
       </div>
-      <nav className="flex flex-1 flex-col gap-1 px-3">
-        {items.map((item) => (
+
+      <nav className="mt-4 flex-1 min-h-0 space-y-1.5 overflow-y-auto">
+        {navItems.map(({ to, icon: Icon, label, subLabel }) => (
           <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.end}
+            key={to}
+            to={to}
+            end={to === "/channels"}
             className={({ isActive }) =>
-              `flex items-center gap-3 rounded-lg px-3 py-2 text-sm ${
-                isActive
-                  ? "bg-white/10 text-white"
-                  : "text-sidebar-muted hover:bg-white/5 hover:text-sidebar-ink"
+              `group flex items-center gap-3 rounded-2xl px-4 py-3 text-sm transition-colors ${
+                isActive || (to === "/" && location.pathname === "/")
+                  ? "border border-blue-100 bg-white text-slate-900 shadow-[0_8px_18px_rgba(15,23,42,0.05)]"
+                  : "text-slate-600 hover:bg-white/70 hover:text-slate-900"
               }`
             }
           >
-            <item.icon />
-            {item.label}
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white group-hover:bg-slate-50">
+              <Icon size={17} />
+            </span>
+            <span className="min-w-0 flex flex-1 items-center gap-1.5">
+              <span className="shrink-0 whitespace-nowrap font-medium">{label}</span>
+              {subLabel && (
+                <span
+                  className="min-w-0 truncate text-[10px] font-normal text-slate-400"
+                  style={{ textShadow: "0 1px 1px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.8)" }}
+                >
+                  ({subLabel})
+                </span>
+              )}
+            </span>
+            <ChevronRight size={15} className="ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-40" />
           </NavLink>
         ))}
       </nav>
-      <div className="m-3 rounded-xl bg-white/5 px-3 py-3 text-xs">
-        <div className="flex items-center gap-2">
-          <span className={`h-2 w-2 rounded-full ${running ? "bg-ok" : "bg-warn"}`} />
-          <span>{preview ? "预览模式" : running ? "网关运行中" : "网关已停止"}</span>
+
+      <div className="space-y-3">
+        <div className="surface-soft rounded-[20px] p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <div className="text-xs text-slate-500">服务状态</div>
+              <div className="mt-1 text-sm font-medium text-slate-900">
+                {serverStatus?.running ? "运行中" : "未启动"}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <NavLink
+                to="/settings#server"
+                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+                title="服务配置"
+              >
+                <Settings2 size={14} />
+              </NavLink>
+              <span className={`h-2.5 w-2.5 rounded-full ${serverStatus?.running ? "bg-emerald-500" : "bg-rose-500"}`} />
+            </div>
+          </div>
+          <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
+            <Server size={14} className={serverStatus?.running ? "text-emerald-500" : "text-rose-500"} />
+            <div className="min-w-0 flex-1">
+              <div className="mb-1">API BaseUrl 地址</div>
+              <div className="truncate font-mono text-[12px] text-slate-700">
+                {serverStatus?.running ? serverStatus.url : "等待服务启动"}
+              </div>
+            </div>
+          </div>
         </div>
-        <div className="mt-1 pl-4 text-sidebar-muted">
-          {status ? `${status.host}:${status.port}` : "正在读取状态"}
-        </div>
+
+        <button
+          onClick={() => openUrl(githubUrl)}
+          className="flex w-full items-center gap-3 rounded-[18px] border border-slate-200 bg-white/70 px-4 py-3 text-left text-sm text-slate-600 transition-all hover:bg-white hover:text-slate-900 hover:shadow-[0_8px_18px_rgba(15,23,42,0.05)]"
+        >
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
+            <Link size={17} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">GitHub 开源仓库</span>
+            <span className="block truncate text-xs text-slate-500">github.com/fuzhengwei/WaLiAPI</span>
+          </span>
+          <ExternalLink size={14} className="text-slate-400" />
+        </button>
+
+        {isWebRuntime() && (
+          <button
+            onClick={webLogout}
+            className="flex w-full items-center gap-3 rounded-[18px] border border-slate-200 bg-white/70 px-4 py-3 text-left text-sm text-slate-600 transition-all hover:bg-white hover:text-rose-600 hover:shadow-[0_8px_18px_rgba(15,23,42,0.05)]"
+          >
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
+              <LogOut size={17} />
+            </span>
+            <span className="min-w-0 flex-1 font-medium">退出登录</span>
+          </button>
+        )}
       </div>
     </aside>
-  );
-}
-
-function iconProps() {
-  return {
-    viewBox: "0 0 24 24",
-    className: "h-[18px] w-[18px]",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: 1.7,
-    "aria-hidden": true as const,
-  };
-}
-
-function DashboardIcon() {
-  return (
-    <svg {...iconProps()}>
-      <rect x="3" y="3" width="8" height="8" rx="1.5" />
-      <rect x="13" y="3" width="8" height="5" rx="1.5" />
-      <rect x="13" y="10" width="8" height="11" rx="1.5" />
-      <rect x="3" y="13" width="8" height="8" rx="1.5" />
-    </svg>
-  );
-}
-
-function UsageIcon() {
-  return (
-    <svg {...iconProps()}>
-      <path d="M4 19V5" />
-      <path d="M4 19h16" />
-      <path d="M8 16v-4" />
-      <path d="M12 16V8" />
-      <path d="M16 16v-6" />
-    </svg>
-  );
-}
-
-function ChannelIcon() {
-  return (
-    <svg {...iconProps()}>
-      <circle cx="6" cy="12" r="2" />
-      <circle cx="18" cy="7" r="2" />
-      <circle cx="18" cy="17" r="2" />
-      <path d="M8 12h6M16 8.5 8.8 11M16 15.5 8.8 13" />
-    </svg>
-  );
-}
-
-function KeyIcon() {
-  return (
-    <svg {...iconProps()}>
-      <circle cx="8" cy="14" r="3.2" />
-      <path d="M11 14h9l-2 2M16 14v2" />
-    </svg>
-  );
-}
-
-function LogIcon() {
-  return (
-    <svg {...iconProps()}>
-      <path d="M7 3.5h8l4 4V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" />
-      <path d="M15 3.5V8h4M9 12h6M9 16h6" />
-    </svg>
-  );
-}
-
-function SettingsIcon() {
-  return (
-    <svg {...iconProps()}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 3.5v2.2M12 18.3v2.2M4.8 6.8l1.6 1.6M17.6 15.6l1.6 1.6M3.5 12h2.2M18.3 12h2.2M4.8 17.2l1.6-1.6M17.6 8.4l1.6-1.6" />
-    </svg>
   );
 }

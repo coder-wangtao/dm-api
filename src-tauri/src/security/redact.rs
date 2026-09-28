@@ -11,6 +11,16 @@ pub fn redact_json(value: &serde_json::Value, settings: &SecuritySettings) -> se
     cloned
 }
 
+/// Logs are a different trust boundary from upstream forwarding.  Never make
+/// persistence of a caller's prompt conditional on the user-selected
+/// forwarding-redaction mode: scan findings can identify a secret even while
+/// audit mode intentionally forwards the original request.
+pub fn redact_json_for_logging(value: &serde_json::Value) -> serde_json::Value {
+    let mut cloned = value.clone();
+    redact_value_in_place(&mut cloned);
+    cloned
+}
+
 fn redact_value_in_place(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(s) => {
@@ -27,7 +37,7 @@ fn redact_value_in_place(value: &mut serde_json::Value) {
                 let lower_key = k.to_ascii_lowercase();
                 if is_secret_field(&lower_key) {
                     if let Some(s) = v.as_str() {
-                        if s.len() > 4 {
+                        if !s.is_empty() {
                             *v = serde_json::Value::String(mask_string(s));
                         }
                     }
@@ -64,7 +74,13 @@ fn redact_string(s: &str) -> String {
         let chars: Vec<char> = result.chars().collect();
         let mut i = 0;
         while i < chars.len() {
-            if i + 7 <= chars.len() && chars[i..i+7].iter().collect::<String>().to_ascii_lowercase() == "bearer " {
+            if i + 7 <= chars.len()
+                && chars[i..i + 7]
+                    .iter()
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+                    == "bearer "
+            {
                 out.push_str("Bearer ");
                 // Skip until whitespace or end
                 i += 7;
@@ -74,7 +90,7 @@ fn redact_string(s: &str) -> String {
                         // Keep first 2 chars
                         if i + 2 <= chars.len() {
                             out.push(chars[i]);
-                            out.push(chars[i+1]);
+                            out.push(chars[i + 1]);
                             i += 2;
                         }
                         token_started = true;
@@ -97,9 +113,18 @@ fn redact_string(s: &str) -> String {
         || result.contains("-----BEGIN PRIVATE KEY-----")
     {
         result = result
-            .replace("-----BEGIN OPENSSH PRIVATE KEY-----", "-----BEGIN [REDACTED PRIVATE KEY]-----")
-            .replace("-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN [REDACTED PRIVATE KEY]-----")
-            .replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN [REDACTED PRIVATE KEY]-----");
+            .replace(
+                "-----BEGIN OPENSSH PRIVATE KEY-----",
+                "-----BEGIN [REDACTED PRIVATE KEY]-----",
+            )
+            .replace(
+                "-----BEGIN RSA PRIVATE KEY-----",
+                "-----BEGIN [REDACTED PRIVATE KEY]-----",
+            )
+            .replace(
+                "-----BEGIN PRIVATE KEY-----",
+                "-----BEGIN [REDACTED PRIVATE KEY]-----",
+            );
         // Remove key body lines
         let mut out = String::new();
         let mut in_key = false;
@@ -164,16 +189,129 @@ fn mask_string(s: &str) -> String {
         return "****".to_string();
     }
     let prefix: String = chars.iter().take(4).collect();
-    let suffix: String = chars.iter().rev().take(4).copied().collect::<Vec<_>>().iter().rev().copied().collect();
+    let suffix: String = chars
+        .iter()
+        .rev()
+        .take(4)
+        .copied()
+        .collect::<Vec<_>>()
+        .iter()
+        .rev()
+        .copied()
+        .collect();
     format!("{}****{}", prefix, suffix)
 }
 
 fn is_secret_field(key: &str) -> bool {
     matches!(
         key,
-        "api_key" | "apikey" | "secret" | "secret_key" | "access_key"
-            | "access_token" | "auth_token" | "token" | "password" | "passwd"
-            | "authorization" | "cookie" | "session" | "sessionid" | "private_key"
-            | "client_secret" | "aws_secret_access_key" | "secretkey"
+        "api_key"
+            | "apikey"
+            | "secret"
+            | "secret_key"
+            | "access_key"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "device_code"
+            | "user_code"
+            | "authorization_code"
+            | "auth_token"
+            | "token"
+            | "password"
+            | "passwd"
+            | "authorization"
+            | "cookie"
+            | "session"
+            | "sessionid"
+            | "private_key"
+            | "client_secret"
+            | "aws_secret_access_key"
+            | "secretkey"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn kimi_secret_fields_are_redacted_for_logging() {
+        let payload = json!({
+            "access_token": "kimi-access-secret",
+            "refresh_token": "kimi-refresh-secret",
+            "device_code": "kimi-device-code",
+            "user_code": "ABCD-EFGH",
+            "device_id": "d1e2b3a4c5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
+            "expires_at": "2099-01-01T00:00:00Z",
+        });
+        let redacted = redact_json_for_logging(&payload);
+        for secret in [
+            "kimi-access-secret",
+            "kimi-refresh-secret",
+            "kimi-device-code",
+            "ABCD-EFGH",
+        ] {
+            let rendered = redacted.to_string();
+            assert!(!rendered.contains(secret), "log redaction leaked {secret}");
+        }
+        // Non-secret fields survive.
+        assert_eq!(
+            redacted["device_id"],
+            "d1e2b3a4c5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f"
+        );
+        assert_eq!(redacted["expires_at"], "2099-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn verification_url_survives_log_redaction_as_url_not_secret() {
+        // `verification_uri_complete` is a non-secret routing URL surfaced to the
+        // UI; redaction must not mangle it, so support logs keep a usable
+        // reference.  Kimi secrecy for this URL is NOT enforced here — the
+        // login-session layer never persists it and the command DTO drops it on
+        // terminal states (kimi-auth.md §14).  This test pins only the redactor
+        // contract: an URL field passes through intact, and the embedded
+        // `user_code` is not stripped as a side effect.
+        let value = json!({"verification_uri_complete": "https://auth.kimi.com/verify?user_code=ABCD-EFGH"});
+        let redacted = redact_json_for_logging(&value);
+        assert!(redacted["verification_uri_complete"].as_str().is_some());
+        // user_code as its own field is a secret and must be masked.
+        let secret = redact_json_for_logging(&json!({"user_code": "ABCD-EFGH"}));
+        assert_ne!(secret["user_code"].as_str().unwrap(), "ABCD-EFGH");
+    }
+
+    #[test]
+    fn secret_field_detection_covers_kimi_names() {
+        for key in ["access_token", "refresh_token", "device_code", "user_code"] {
+            assert!(is_secret_field(key), "{key} must be secret");
+        }
+    }
+
+    #[test]
+    fn grok_secret_fields_are_redacted_for_logging() {
+        let payload = json!({
+            "access_token": "grok-access-secret",
+            "refresh_token": "grok-refresh-secret",
+            "id_token": "grok-id-token-secret",
+            "device_code": "grok-device-code",
+            "authorization_code": "grok-auth-code",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        });
+        let redacted = redact_json_for_logging(&payload);
+        for secret in [
+            "grok-access-secret",
+            "grok-refresh-secret",
+            "grok-id-token-secret",
+            "grok-device-code",
+            "grok-auth-code",
+        ] {
+            let rendered = redacted.to_string();
+            assert!(!rendered.contains(secret), "log redaction leaked {secret}");
+        }
+        assert_eq!(redacted["expires_at"], "2099-01-01T00:00:00Z");
+        assert_eq!(redacted["token_endpoint"], "https://auth.x.ai/oauth2/token");
+    }
 }

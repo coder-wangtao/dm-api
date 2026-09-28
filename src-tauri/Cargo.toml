@@ -1,19 +1,22 @@
 [package]
-name = "damao-api"
-version = "0.1.0"
-description = "DaMaoAPI - Local LLM API Gateway"
+name = "damaoapi"
+version = "0.3.4"
+description = "DamaoAPI - Local LLM API Gateway"
 authors = ["wangtao"]
 edition = "2021"
+default-run = "damaoapi"
 
 [lib]
-name = "damao_api_lib"
+name = "damaoapi_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# 仅为 Windows 测试二进制嵌入 Common-Controls v6 清单（见 build.rs），与 tauri-build 同源
+embed-resource = "3"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["test"] }
 tauri-plugin-opener = "2"
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-store = "2"
@@ -22,21 +25,27 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # HTTP Server
 axum = "0.8"
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors"] }
+tokio = { version = "1", features = ["full", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
 
 # HTTP Client
 reqwest = { version = "0.12", features = ["json", "stream"] }
+# URL 解析与重建（KB 导入安全校验；与 reqwest 同源，不引入新版本）
+url = "2"
 futures-util = "0.3"
 async-stream = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
 
 # Database
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "chrono", "macros"] }
@@ -47,11 +56,59 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 rand = "0.9"
 dirs = "5"
 async-trait = "0.1"
 bytes = "1"
+oauth2 = "5"
 
 # Logging
 log = "0.4"
+
+# Knowledge Base dependencies
+sha2 = "0.10"
+hex = "0.4"
+bincode = "1"
+base64 = "0.22"
+pdf-extract = "0.7"
+unicode-normalization = "0.1"
+# 知识库 VLM OCR：pdfium 渲染 PDF 页面（动态库运行时加载，见 resources/pdfium/README.md）
+pdfium-render = "0.8"
+image = "0.25"
+
+# Token estimation (fallback when upstream doesn't return usage)
+tiktoken-rs = "0.6"
+
+# tree-sitter code parsing
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+
+# Web admin panel
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["rand_core"] }
+dashmap = "6"
+mime_guess = "2"
+rust-embed = { version = "8", optional = true }
+
+[features]
+# desktop-ui：桌面专属能力（托盘图标/文件对话框/开机自启/OAuth 打开系统浏览器），
+# 会引入 GTK/DBus 等动态库；headless（damaoapi-web）用 --no-default-features 关闭。
+default = ["desktop-ui"]
+desktop-ui = ["tauri/tray-icon"]
+embed-web = ["dep:rust-embed"]
+
+[profile.release]
+# LTO + 单 CGU：让链接器彻底丢弃 headless 二进制未引用的桌面端代码
+# （否则 damaoapi_lib::run<Wry> 与路由 handler 共驻同一 CGU，wry/webkit 会被链入 NEEDED）
+lto = "fat"
+codegen-units = 1
+# 不要设置 panic = "abort"：release 下它会让 panic 直接终止进程，
+# 代码中依赖 catch_unwind 的护栏（如知识库解析/摄入）与 tokio 任务级 panic 隔离将全部失效（issue #55）
+strip = "debuginfo"
