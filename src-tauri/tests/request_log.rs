@@ -13,7 +13,7 @@
 //!   * a row with the new fields round-trips per-field.
 
 use serde_json::json;
-use waliapi_lib::{
+use damaoapi_lib::{
     db::{models, repository::Repository},
     security::{gate::gate_original, SecuritySettings},
 };
@@ -39,7 +39,7 @@ async fn fresh_db() -> sqlx::SqlitePool {
 /// Build a full `RequestLog` with the T09 observability fields populated.
 fn full_log(channel_id: Option<&str>, channel_name: Option<&str>) -> models::RequestLog {
     models::RequestLog {
-        id: waliapi_lib::utils::id::new_id(),
+        id: damaoapi_lib::utils::id::new_id(),
         seq: None,
         api_key_id: Some("key-1".into()),
         api_key_name: Some("tester".into()),
@@ -114,7 +114,7 @@ async fn request_log_migration_016_adds_nullable_columns_and_old_queries_still_w
     // (FromRow with NULL observability columns) and aggregate queries still run.
     let repo = Repository::new(pool);
     let legacy = models::RequestLog {
-        id: waliapi_lib::utils::id::new_id(),
+        id: damaoapi_lib::utils::id::new_id(),
         seq: None,
         api_key_id: Some("key-1".into()),
         api_key_name: Some("legacy".into()),
@@ -195,7 +195,7 @@ async fn request_log_create_log_persists_t09_fields_and_log_dto_maps_them() {
     assert_eq!(stored.client_cancelled, Some(0));
     assert_eq!(stored.stream_committed, Some(1));
 
-    let dto: waliapi_lib::commands::log::LogDto = stored.into();
+    let dto: damaoapi_lib::commands::log::LogDto = stored.into();
     assert_eq!(
         dto.route_group.as_deref(),
         Some("chat_completions_g1_native")
@@ -232,8 +232,8 @@ async fn request_log_basic_policy_drops_bodies_at_persistence_boundary() {
     log.response_choices = Some("{\"choices\":[]}".into());
     repo.create_log_with_policy(
         &log,
-        waliapi_lib::audit_log::LogPolicy {
-            detail_level: waliapi_lib::audit_log::LogDetailLevel::Basic,
+        damaoapi_lib::audit_log::LogPolicy {
+            detail_level: damaoapi_lib::audit_log::LogDetailLevel::Basic,
             retention_days: 7,
         },
     )
@@ -269,7 +269,7 @@ async fn request_log_upstream_type_defaults_filters_and_round_trips() {
         .await
         .expect("account log read");
     assert_eq!(stored.upstream_type, "auth_account");
-    let dto: waliapi_lib::commands::log::LogDto = stored.into();
+    let dto: damaoapi_lib::commands::log::LogDto = stored.into();
     assert_eq!(dto.upstream_type, "auth_account");
 
     let channel_only = repo
@@ -314,7 +314,7 @@ async fn request_log_legacy_log_with_null_observability_maps_to_none_in_dto() {
     let pool = fresh_db().await;
     let repo = Repository::new(pool);
     let legacy = models::RequestLog {
-        id: waliapi_lib::utils::id::new_id(),
+        id: damaoapi_lib::utils::id::new_id(),
         seq: None,
         api_key_id: None,
         api_key_name: None,
@@ -353,7 +353,7 @@ async fn request_log_legacy_log_with_null_observability_maps_to_none_in_dto() {
     assert_eq!(stored.client_cancelled, None);
     assert_eq!(stored.stream_committed, None);
 
-    let dto: waliapi_lib::commands::log::LogDto = stored.into();
+    let dto: damaoapi_lib::commands::log::LogDto = stored.into();
     assert_eq!(dto.route_group, None);
     assert_eq!(dto.client_cancelled, None);
     assert_eq!(dto.stream_committed, None);
@@ -367,7 +367,7 @@ async fn request_log_sanitized_log_body_is_what_gets_persisted() {
     // the sanitized log body string, and the raw secret is absent.
     let raw = json!({"model": "m", "messages": [{"role": "user", "content": "Bearer sk-abcdefghijklmnopqrstuvwxyz123456"}]});
     let audited = gate_original(
-        waliapi_lib::security::gate::DownstreamProtocol::ChatCompletions,
+        damaoapi_lib::security::gate::DownstreamProtocol::ChatCompletions,
         "/v1/chat/completions",
         raw.clone(),
         None,
@@ -411,7 +411,7 @@ async fn request_log_cleanup_removes_expired_rows_and_findings() {
     .await
     .expect("insert finding");
 
-    let deleted = waliapi_lib::audit_log::cleanup_expired_logs(&pool, 1)
+    let deleted = damaoapi_lib::audit_log::cleanup_expired_logs(&pool, 1)
         .await
         .expect("cleanup");
     assert_eq!(deleted, 1);
@@ -424,7 +424,7 @@ async fn request_log_cleanup_removes_expired_rows_and_findings() {
             .unwrap();
     assert_eq!(findings, 0);
     assert_eq!(
-        waliapi_lib::audit_log::cleanup_expired_logs(&pool, 0)
+        damaoapi_lib::audit_log::cleanup_expired_logs(&pool, 0)
             .await
             .unwrap(),
         0
@@ -433,16 +433,16 @@ async fn request_log_cleanup_removes_expired_rows_and_findings() {
 
 // ─── Stream segments（迁移 032：流式内容段溢出表）────────────────────────────
 
-fn detailed_policy() -> waliapi_lib::audit_log::LogPolicy {
-    waliapi_lib::audit_log::LogPolicy {
-        detail_level: waliapi_lib::audit_log::LogDetailLevel::Detailed,
+fn detailed_policy() -> damaoapi_lib::audit_log::LogPolicy {
+    damaoapi_lib::audit_log::LogPolicy {
+        detail_level: damaoapi_lib::audit_log::LogDetailLevel::Detailed,
         retention_days: 7,
     }
 }
 
-fn brief_policy() -> waliapi_lib::audit_log::LogPolicy {
-    waliapi_lib::audit_log::LogPolicy {
-        detail_level: waliapi_lib::audit_log::LogDetailLevel::Brief,
+fn brief_policy() -> damaoapi_lib::audit_log::LogPolicy {
+    damaoapi_lib::audit_log::LogPolicy {
+        detail_level: damaoapi_lib::audit_log::LogDetailLevel::Brief,
         retention_days: 7,
     }
 }
@@ -471,8 +471,8 @@ async fn stream_segments_persisted_only_under_detailed_policy_for_streams() {
     log.response_choices = Some("{\"choices\":[]}".into());
     repo.create_log_with_policy(
         &log,
-        waliapi_lib::audit_log::LogPolicy {
-            detail_level: waliapi_lib::audit_log::LogDetailLevel::Basic,
+        damaoapi_lib::audit_log::LogPolicy {
+            detail_level: damaoapi_lib::audit_log::LogDetailLevel::Basic,
             retention_days: 7,
         },
     )

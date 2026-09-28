@@ -34,7 +34,7 @@ export function LoginPage() {
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
             <img
               src="/logo.png"
-              alt="WaLiAPI"
+              alt="DamaoAPI"
               className="h-full w-full object-cover"
             />
           </div>

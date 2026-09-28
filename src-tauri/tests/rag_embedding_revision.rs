@@ -3,15 +3,15 @@ use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
-use waliapi_lib::db::repository::Repository;
-use waliapi_lib::server::event_bridge::EventSink;
-use waliapi_lib::services::knowledge::{
+use damaoapi_lib::db::repository::Repository;
+use damaoapi_lib::server::event_bridge::EventSink;
+use damaoapi_lib::services::knowledge::{
     models::{CreateKbInput, UpdateKbInput},
     processor,
     repository::{ChunkInsert, KbRepository},
     retriever,
 };
-use waliapi_lib::settings_store::SettingsStore;
+use damaoapi_lib::settings_store::SettingsStore;
 
 async fn pool() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -24,7 +24,7 @@ async fn pool() -> SqlitePool {
 }
 
 async fn wait_for_index(
-    events: &mut tokio::sync::broadcast::Receiver<waliapi_lib::server::event_bridge::AdminEvent>,
+    events: &mut tokio::sync::broadcast::Receiver<damaoapi_lib::server::event_bridge::AdminEvent>,
 ) {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {

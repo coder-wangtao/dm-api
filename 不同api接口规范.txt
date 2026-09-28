@@ -1,0 +1,38 @@
+OpenAI 风格
+POST /v1/chat/completions
+{
+  "model": "xxx",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ]
+}
+
+Anthropic
+POST /v1/messages
+{
+  "model": "xxx",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ]
+}
+
+
+Ollama
+POST /api/chat
+{
+  "model": "qwen3",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ],
+  "stream": false
+}

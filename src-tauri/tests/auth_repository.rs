@@ -1,5 +1,5 @@
 use serde_json::json;
-use waliapi_lib::db::{
+use damaoapi_lib::db::{
     models::{AuthAccountUpsert, ModelState, ModelStates, QuotaState},
     repository::Repository,
 };

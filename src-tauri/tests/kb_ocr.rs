@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 
 use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
 use sqlx::SqlitePool;
-use waliapi_lib::db::repository::Repository;
-use waliapi_lib::services::knowledge::models::{CreateKbInput, UpdateKbInput};
-use waliapi_lib::services::knowledge::ocr::vlm::VlmOcrClient;
-use waliapi_lib::services::knowledge::repository::KbRepository;
-use waliapi_lib::settings_store::SettingsStore;
+use damaoapi_lib::db::repository::Repository;
+use damaoapi_lib::services::knowledge::models::{CreateKbInput, UpdateKbInput};
+use damaoapi_lib::services::knowledge::ocr::vlm::VlmOcrClient;
+use damaoapi_lib::services::knowledge::repository::KbRepository;
+use damaoapi_lib::settings_store::SettingsStore;
 
 /// In-memory SQLite with all migrations (incl. 025) applied.
 async fn fresh_db() -> SqlitePool {

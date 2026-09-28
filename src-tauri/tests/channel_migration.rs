@@ -17,7 +17,7 @@
 use serde_json::json;
 
 // Integration test: reference the lib crate by its lib name.
-use waliapi_lib::{
+use damaoapi_lib::{
     core::channel_identity::{resolve_channel_identity, ChannelIdentity, ChannelIdentityRow},
     db::{models, repository::Repository},
 };

@@ -1,6 +1,6 @@
 use serde_json::json;
 use sqlx::SqlitePool;
-use waliapi_lib::security::{
+use damaoapi_lib::security::{
     gate::{gate_original, DownstreamProtocol},
     rules::{CreateCustomRuleInput, CustomRuleRepository},
     SecurityAction, SecuritySettings,

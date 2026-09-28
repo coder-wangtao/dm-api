@@ -1,6 +1,6 @@
 //! 用真实 SQLite 迁移和 FTS5 验证中文搜索，不需要网络或个人知识库。
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-use waliapi_lib::services::knowledge::{
+use damaoapi_lib::services::knowledge::{
     parser,
     repository::{ChunkInsert, KbRepository},
     retriever,

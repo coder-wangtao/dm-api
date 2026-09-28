@@ -1,7 +1,7 @@
 //! DB 已提交而后台索引尚未更新时，搜索不能丢失新切片或返回不足的结果。
 use sqlx::SqlitePool;
-use waliapi_lib::server::event_bridge::EventSink;
-use waliapi_lib::services::knowledge::{
+use damaoapi_lib::server::event_bridge::EventSink;
+use damaoapi_lib::services::knowledge::{
     repository::{ChunkInsert, KbRepository},
     retriever,
 };

@@ -1,0 +1,24 @@
+DamaoAPI｜本地大模型 API 网关（桌面端 + 无头服务）
+
+独立设计并实现一套运行在本机的大模型网关。下游按 OpenAI 兼容协议接入（Chat Completions、Responses、Embeddings、Images、Audio、Models），上游对接 Moonshot（Kimi）、OpenAI、Anthropic、Ollama 等多家供应商。网关负责鉴权、按模型选路、协议转换、失败转移和用量记录，并可将网关地址、密钥和模型一键写入 Codex、Claude Code、Gemini CLI 等客户端配置。同时提供 Tauri 桌面窗口和可单独部署的无头 Web 管理端。
+
+技术栈
+
+桌面端：Tauri 2、Rust、WebView2；系统能力使用 tauri-plugin-dialog / opener / shell / clipboard / notification / autostart
+前端：React 19、TypeScript、Vite 8、Tailwind CSS 4、React Router 7、Zustand；Markdown 渲染使用 react-markdown、remark-gfm、rehype-sanitize
+后端：Rust 2021、Tokio、Axum 0.8、Tower / tower-http、reqwest、async-trait、Serde / serde_json
+存储与配置：SQLite（sqlx 0.8）、toml / toml_edit（读写 Codex 等 TOML 配置）、tauri-plugin-store
+安全：API Key 鉴权与配额、Argon2 管理端密码、OAuth2（上游账号登录）
+可观测：tracing、tracing-subscriber、tracing-appender，请求 ID 贯穿转发链路
+协议与转换：OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Ollama /api/chat；SSE 流式桥接；Responses→Chat、Chat→Messages 编解码
+知识库：pdf-extract、pdfium-render、tree-sitter（TypeScript / JavaScript / Python / Rust / Go / Java）、tiktoken-rs 做 token 估算
+主要工作
+
+实现本地网关进程（默认 127.0.0.1:8777），统一暴露 /v1/chat/completions、/v1/responses、/v1/embeddings、/v1/models 等接口，用网关 API Key 做鉴权，再按渠道密钥访问上游。
+设计多渠道路由：渠道启用状态、模型列表命中、模型映射（来源名→上游模型名）、空模型列表通配、优先级与权重；没有候选渠道时返回明确的 503，而不是打到错误上游。
+完成 Codex 所需的 Responses→Chat Completions 转换。兼容 Codex 固定携带的 text.verbosity、纯文本 format、reasoning.effort，以及空的 developer/system 消息，避免 Moonshot 等上游返回 400；json_object / json_schema 映射为 Chat 的 response_format。
+支持 Anthropic Messages 与 OpenAI SSE 互转，使下游保持 OpenAI 形态，上游仍可走 Claude 或 Ollama 原生接口。
+实现客户端一键接入：用 toml_edit 改写 ~/.codex/config.toml（model_provider、base_url、wire_api=responses、experimental_bearer_token），并为 Claude Code、Gemini CLI 等写入各自配置；保留原始配置备份，可恢复。
+提供渠道连通性测试、模型预设（含 Moonshot/Kimi）、API Key 配额和允许/拒绝模型列表。
+桌面端与无头模式共用同一套 Rust 核心：桌面用 Tauri 命令，Web 管理端通过 HTTP invoke 复用同一前端页面。
+知识库侧支持 PDF 解析与页面渲染、多语言 tree-sitter 代码切分，以及在上游未返回 usage 时用 tiktoken 估算 token。

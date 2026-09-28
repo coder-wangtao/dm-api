@@ -2,14 +2,14 @@
 use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use waliapi_lib::db::repository::Repository;
-use waliapi_lib::services::knowledge::{
+use damaoapi_lib::db::repository::Repository;
+use damaoapi_lib::services::knowledge::{
     models::ConversationMessage,
     rag,
     repository::{ChunkInsert, KbRepository},
     retriever,
 };
-use waliapi_lib::settings_store::SettingsStore;
+use damaoapi_lib::settings_store::SettingsStore;
 
 #[tokio::test]
 async fn ask_reports_only_sources_that_were_sent_to_the_model() {

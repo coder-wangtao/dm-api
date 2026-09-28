@@ -8,7 +8,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tauri::Manager;
-use waliapi_lib::{
+use damaoapi_lib::{
     commands::knowledge_base::search_knowledge_base,
     db::{repository::Repository, Database},
     server::{event_bridge::EventSink, router::SharedState},
@@ -37,19 +37,19 @@ async fn fixture() -> (SharedState, String) {
     let (tx, _) = tokio::sync::broadcast::channel(100);
     let state = Arc::new(AppState {
         db: Arc::new(Database { pool: pool.clone() }),
-        auth_service: Arc::new(waliapi_lib::auth_provider::service::AuthService::new(
+        auth_service: Arc::new(damaoapi_lib::auth_provider::service::AuthService::new(
             Arc::new(Repository::new(pool.clone())),
-            waliapi_lib::auth_provider::ProviderRegistry::new(),
+            damaoapi_lib::auth_provider::ProviderRegistry::new(),
         )),
-        login_sessions: Arc::new(waliapi_lib::commands::auth::LoginSessions::new()),
+        login_sessions: Arc::new(damaoapi_lib::commands::auth::LoginSessions::new()),
         server_port: Arc::new(tokio::sync::RwLock::new(0)),
         server_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         server_handle: Arc::new(tokio::sync::RwLock::new(None)),
-        test_receipts: Arc::new(waliapi_lib::services::channel_test::TestReceiptStore::new(
+        test_receipts: Arc::new(damaoapi_lib::services::channel_test::TestReceiptStore::new(
             std::time::Duration::from_secs(60),
         )),
-        admin_sessions: waliapi_lib::server::admin_auth::SessionStore::new(),
-        login_throttle: waliapi_lib::server::admin_auth::LoginThrottle::new(),
+        admin_sessions: damaoapi_lib::server::admin_auth::SessionStore::new(),
+        login_throttle: damaoapi_lib::server::admin_auth::LoginThrottle::new(),
         events: EventSink::headless(tx),
         settings,
         data_dir,

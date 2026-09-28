@@ -2,7 +2,7 @@
 use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
-use waliapi_lib::{
+use damaoapi_lib::{
     db::repository::Repository,
     server::event_bridge::EventSink,
     services::knowledge::{

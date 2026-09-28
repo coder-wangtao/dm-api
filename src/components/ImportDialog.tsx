@@ -1,16 +1,35 @@
 import { useState } from "react";
-import { importExportApi, type ImportResult, type ScannedSource } from "../lib/api";
+import {
+  importExportApi,
+  type ImportResult,
+  type ScannedSource,
+} from "../lib/api";
 import { isWebRuntime, pickFileAsText } from "../lib/web";
-import { X, Upload, FileJson, ScanLine, Check, AlertCircle, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import {
+  X,
+  Upload,
+  FileJson,
+  ScanLine,
+  Check,
+  AlertCircle,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+} from "lucide-react";
 import { isTauriRuntime } from "../lib/runtime";
 
 type ImportMode = "menu" | "walicode" | "waliapi" | "scan";
 
 /** 桌面端走原生文件对话框；Web 版用浏览器文件选择器读取内容。 */
 const pickImportContent = (): Promise<string | null> =>
-  isWebRuntime() ? pickFileAsText(".json,application/json") : importExportApi.pickImportFile();
+  isWebRuntime()
+    ? pickFileAsText(".json,application/json")
+    : importExportApi.pickImportFile();
 
-export function ImportDialog({ onClose, onImported }: {
+export function ImportDialog({
+  onClose,
+  onImported,
+}: {
   onClose: () => void;
   onImported: () => void;
 }) {
@@ -20,9 +39,10 @@ export function ImportDialog({ onClose, onImported }: {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scannedSources, setScannedSources] = useState<ScannedSource[]>([]);
-  const [selectedSources, setSelectedSources] = useState<Set<number>>(new Set());
+  const [selectedSources, setSelectedSources] = useState<Set<number>>(
+    new Set(),
+  );
 
-  // ─── Walicode import ───────────────────────────────────────
   const handleWalicodeImport = async () => {
     setLoading(true);
     setError(null);
@@ -43,7 +63,6 @@ export function ImportDialog({ onClose, onImported }: {
     setLoading(false);
   };
 
-  // ─── Waliapi import ────────────────────────────────────────
   const handleWaliapiImport = async () => {
     setLoading(true);
     setError(null);
@@ -104,7 +123,7 @@ export function ImportDialog({ onClose, onImported }: {
   // Export is now handled directly in ChannelsPage
 
   const toggleSource = (idx: number) => {
-    setSelectedSources(prev => {
+    setSelectedSources((prev) => {
       const next = new Set(prev);
       if (next.has(idx)) next.delete(idx);
       else next.add(idx);
@@ -114,23 +133,32 @@ export function ImportDialog({ onClose, onImported }: {
 
   const SOURCE_ICONS: Record<string, string> = {
     "claude-code": "🤖",
-    "codex": "📦",
-    "cursor": "🖱️",
+    codex: "📦",
+    cursor: "🖱️",
     "openai-cli": "🟢",
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
-      <div className="surface w-full max-w-2xl max-h-[92vh] overflow-auto rounded-[28px]" onClick={e => e.stopPropagation()}>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="surface w-full max-w-2xl max-h-[92vh] overflow-auto rounded-[28px]"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-5 py-4 sticky top-0 bg-inherit z-20">
           <h2 className="text-lg font-semibold">
             {mode === "menu" && "导入渠道"}
             {mode === "walicode" && "导入 WaLiCode 备份"}
             {mode === "waliapi" && "导入 WaLiAPI 导出文件"}
-            {mode === "scan" && (isTauriRuntime() ? "扫描本地 AI 配置" : "扫描服务器 AI 配置")}
+            {mode === "scan" &&
+              (isTauriRuntime() ? "扫描本地 AI 配置" : "扫描服务器 AI 配置")}
           </h2>
-          <button onClick={onClose} className="action-secondary px-3 py-2"><X size={18} /></button>
+          <button onClick={onClose} className="action-secondary px-3 py-2">
+            <X size={18} />
+          </button>
         </div>
 
         <div className="p-5 space-y-4">
@@ -151,10 +179,14 @@ export function ImportDialog({ onClose, onImported }: {
                   <span>导出成功！文件已保存。</span>
                 ) : (
                   <>
-                    <div>导入完成：成功 {result.imported} 个，跳过 {result.skipped} 个</div>
+                    <div>
+                      导入完成：成功 {result.imported} 个，跳过 {result.skipped}{" "}
+                      个
+                    </div>
                     {result.errors.length > 0 && (
                       <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
-                        {result.errors.length} 个错误：{result.errors.join("; ")}
+                        {result.errors.length} 个错误：
+                        {result.errors.join("; ")}
                       </div>
                     )}
                   </>
@@ -170,23 +202,38 @@ export function ImportDialog({ onClose, onImported }: {
 
               <ImportOption
                 icon={<Upload size={20} />}
-                title="导入 WaLiAPI 导出文件"
-                description="从其他 WaLiAPI 实例导出的 JSON 文件导入渠道"
-                onClick={() => { setMode("waliapi"); setResult(null); setError(null); }}
+                title="导入 DamaoAPI 导出文件"
+                description="从其他 DamaoAPI 实例导出的 JSON 文件导入渠道"
+                onClick={() => {
+                  setMode("waliapi");
+                  setResult(null);
+                  setError(null);
+                }}
               />
 
               <ImportOption
                 icon={<ScanLine size={20} />}
-                title={isTauriRuntime() ? "扫描本地 AI 配置" : "扫描服务器 AI 配置"}
+                title={
+                  isTauriRuntime() ? "扫描本地 AI 配置" : "扫描服务器 AI 配置"
+                }
                 description={`自动扫描 Claude Code、Codex、Cursor 等${isTauriRuntime() ? "本地" : "服务器挂载目录中的"}配置并导入`}
-                onClick={() => { setMode("scan"); setResult(null); setError(null); handleScan(); }}
+                onClick={() => {
+                  setMode("scan");
+                  setResult(null);
+                  setError(null);
+                  handleScan();
+                }}
               />
 
               <ImportOption
                 icon={<FileJson size={20} />}
                 title="导入 WaLiCode 备份"
                 description="从 walicode-full-backup.json 导入所有 AI 供应商配置"
-                onClick={() => { setMode("walicode"); setResult(null); setError(null); }}
+                onClick={() => {
+                  setMode("walicode");
+                  setResult(null);
+                  setError(null);
+                }}
               />
             </div>
           )}
@@ -208,10 +255,17 @@ export function ImportDialog({ onClose, onImported }: {
                 disabled={loading}
                 className="action-primary w-full justify-center"
               >
-                {loading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                {loading ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Upload size={16} />
+                )}
                 选择文件并导入
               </button>
-              <button onClick={() => setMode("menu")} className="action-secondary w-full justify-center">
+              <button
+                onClick={() => setMode("menu")}
+                className="action-secondary w-full justify-center"
+              >
                 返回
               </button>
             </div>
@@ -233,10 +287,17 @@ export function ImportDialog({ onClose, onImported }: {
                 disabled={loading}
                 className="action-primary w-full justify-center"
               >
-                {loading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                {loading ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Upload size={16} />
+                )}
                 选择文件并导入
               </button>
-              <button onClick={() => setMode("menu")} className="action-secondary w-full justify-center">
+              <button
+                onClick={() => setMode("menu")}
+                className="action-secondary w-full justify-center"
+              >
                 返回
               </button>
             </div>
@@ -246,7 +307,11 @@ export function ImportDialog({ onClose, onImported }: {
           {mode === "scan" && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-border bg-background/40 px-4 py-4 text-sm">
-                <p className="mb-2 font-medium">{isTauriRuntime() ? "扫描本地 AI 配置" : "扫描 Linux 服务器 AI 配置"}</p>
+                <p className="mb-2 font-medium">
+                  {isTauriRuntime()
+                    ? "扫描本地 AI 配置"
+                    : "扫描 Linux 服务器 AI 配置"}
+                </p>
                 <p className="text-muted-foreground text-xs">
                   自动扫描以下位置的配置文件：
                 </p>
@@ -260,25 +325,36 @@ export function ImportDialog({ onClose, onImported }: {
 
               {scanning ? (
                 <div className="flex items-center justify-center py-8">
-                  <Loader2 size={24} className="animate-spin text-muted-foreground" />
-                  <span className="ml-2 text-sm text-muted-foreground">正在扫描...</span>
+                  <Loader2
+                    size={24}
+                    className="animate-spin text-muted-foreground"
+                  />
+                  <span className="ml-2 text-sm text-muted-foreground">
+                    正在扫描...
+                  </span>
                 </div>
               ) : scannedSources.length > 0 ? (
                 <>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between px-1">
-                      <span className="text-sm font-medium">发现 {scannedSources.length} 个配置</span>
+                      <span className="text-sm font-medium">
+                        发现 {scannedSources.length} 个配置
+                      </span>
                       <button
                         onClick={() => {
                           if (selectedSources.size === scannedSources.length) {
                             setSelectedSources(new Set());
                           } else {
-                            setSelectedSources(new Set(scannedSources.map((_, i) => i)));
+                            setSelectedSources(
+                              new Set(scannedSources.map((_, i) => i)),
+                            );
                           }
                         }}
                         className="text-xs text-primary hover:underline"
                       >
-                        {selectedSources.size === scannedSources.length ? "取消全选" : "全选"}
+                        {selectedSources.size === scannedSources.length
+                          ? "取消全选"
+                          : "全选"}
                       </button>
                     </div>
                     {scannedSources.map((src, idx) => (
@@ -296,7 +372,11 @@ export function ImportDialog({ onClose, onImported }: {
                     disabled={loading || selectedSources.size === 0}
                     className="action-primary w-full justify-center"
                   >
-                    {loading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
+                    {loading ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <Upload size={16} />
+                    )}
                     导入选中的 {selectedSources.size} 个配置
                   </button>
                 </>
@@ -307,7 +387,11 @@ export function ImportDialog({ onClose, onImported }: {
               ) : null}
 
               <button
-                onClick={() => { setMode("menu"); setScannedSources([]); setResult(null); }}
+                onClick={() => {
+                  setMode("menu");
+                  setScannedSources([]);
+                  setResult(null);
+                }}
                 className="action-secondary w-full justify-center"
               >
                 返回
@@ -322,7 +406,13 @@ export function ImportDialog({ onClose, onImported }: {
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
-function ImportOption({ icon, title, description, onClick, loading }: {
+function ImportOption({
+  icon,
+  title,
+  description,
+  onClick,
+  loading,
+}: {
   icon: React.ReactNode;
   title: string;
   description: string;
@@ -340,14 +430,21 @@ function ImportOption({ icon, title, description, onClick, loading }: {
       </div>
       <div className="min-w-0 flex-1">
         <div className="font-medium">{title}</div>
-        <div className="mt-0.5 text-xs text-muted-foreground">{description}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          {description}
+        </div>
       </div>
       <ChevronRight size={18} className="shrink-0 text-muted-foreground" />
     </button>
   );
 }
 
-function ScannedSourceCard({ source, selected, onToggle, icon }: {
+function ScannedSourceCard({
+  source,
+  selected,
+  onToggle,
+  icon,
+}: {
   source: ScannedSource;
   selected: boolean;
   onToggle: () => void;
@@ -356,7 +453,9 @@ function ScannedSourceCard({ source, selected, onToggle, icon }: {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className={`rounded-2xl border transition-all ${selected ? "border-primary/40 bg-primary/5" : "border-border bg-background/40"}`}>
+    <div
+      className={`rounded-2xl border transition-all ${selected ? "border-primary/40 bg-primary/5" : "border-border bg-background/40"}`}
+    >
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           onClick={onToggle}
@@ -371,7 +470,9 @@ function ScannedSourceCard({ source, selected, onToggle, icon }: {
         <span className="text-lg">{icon}</span>
         <div className="min-w-0 flex-1">
           <div className="font-medium text-sm">{source.name}</div>
-          <div className="text-xs text-muted-foreground font-mono truncate">{source.base_url}</div>
+          <div className="text-xs text-muted-foreground font-mono truncate">
+            {source.base_url}
+          </div>
         </div>
         <button
           onClick={() => setExpanded(!expanded)}
@@ -388,11 +489,15 @@ function ScannedSourceCard({ source, selected, onToggle, icon }: {
           </div>
           <div className="flex gap-2">
             <span className="text-muted-foreground shrink-0">API Key:</span>
-            <span className="font-mono">{source.api_key.slice(0, 8)}...{source.api_key.slice(-4)}</span>
+            <span className="font-mono">
+              {source.api_key.slice(0, 8)}...{source.api_key.slice(-4)}
+            </span>
           </div>
           <div className="flex gap-2">
             <span className="text-muted-foreground shrink-0">模型:</span>
-            <span className="font-mono">{source.models.join(", ") || "(无)"}</span>
+            <span className="font-mono">
+              {source.models.join(", ") || "(无)"}
+            </span>
           </div>
           <div className="flex gap-2">
             <span className="text-muted-foreground shrink-0">格式:</span>

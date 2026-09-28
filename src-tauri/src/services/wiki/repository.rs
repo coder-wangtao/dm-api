@@ -710,7 +710,7 @@ mod tests {
 
     #[test]
     fn search_snippet_is_case_insensitive_for_ascii() {
-        let snippet = build_search_snippet("WaLiAPI Wiki Gateway", "wiki").unwrap();
-        assert!(snippet.contains("WaLiAPI Wiki Gateway"));
+        let snippet = build_search_snippet("DamaoAPI Wiki Gateway", "wiki").unwrap();
+        assert!(snippet.contains("DamaoAPI Wiki Gateway"));
     }
 }
