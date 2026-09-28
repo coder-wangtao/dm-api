@@ -36,7 +36,7 @@ pub async fn start_server(
         let disabled = service_tokens.disabled_endpoints();
         if !disabled.is_empty() {
             tracing::info!(
-                "[服务端点鉴权] 未配置 WALIAPI_ADMIN_TOKEN / WALIAPI_MCP_TOKEN，\
+                "[服务端点鉴权] 未配置 DAMAOAPI_ADMIN_TOKEN / DAMAOAPI_MCP_TOKEN，\
                  {} 不可用。RAG 查询可在密钥页面授权 API Key，无需环境变量 token。",
                 disabled.join("、")
             );

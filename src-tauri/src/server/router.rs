@@ -154,9 +154,9 @@ pub struct SharedState {
     /// 供 /admin/api/invoke 分发用的 'static State（桌面：真实 handle；headless：mock handle）。
     pub state_static: tauri::State<'static, Arc<AppState>>,
     /// KB/Wiki REST 端点（/api/kb、/api/wiki）的管理员 Bearer token
-    /// （WALIAPI_ADMIN_TOKEN；None = 仅接受已授权 API Key 的 RAG 查询）。
+    /// （DAMAOAPI_ADMIN_TOKEN；None = 仅接受已授权 API Key 的 RAG 查询）。
     pub admin_token: Option<Arc<str>>,
-    /// MCP 端点（/mcp*）的独立 Bearer token（WALIAPI_MCP_TOKEN；None = 仅接受已授权 API Key 的无会话查询）。
+    /// MCP 端点（/mcp*）的独立 Bearer token（DAMAOAPI_MCP_TOKEN；None = 仅接受已授权 API Key 的无会话查询）。
     pub mcp_token: Option<Arc<str>>,
     /// 桌面端真实 AppHandle（文件对话框、自动启动等桌面专属命令）；headless 编译期不存在该字段。
     #[cfg(feature = "desktop-ui")]

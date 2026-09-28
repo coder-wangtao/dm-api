@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   LayoutDashboard,
   BookOpen,
@@ -11,8 +10,6 @@ import {
   Settings2,
   Server,
   ChevronRight,
-  ExternalLink,
-  Link,
   Database,
   LogOut,
 } from "lucide-react";
@@ -41,12 +38,11 @@ const navItems = [
   { to: "/settings", icon: Settings, label: "设置" },
 ];
 
-const githubUrl = "https://github.com/fuzhengwei/WaLiAPI";
 const appVersion = packageJson.version;
 
 /** Web 管理面板：清除会话并回到登录页（桌面端不渲染入口）。 */
 function webLogout() {
-  const token = localStorage.getItem("waliapi_admin_token");
+  const token = localStorage.getItem("damao_admin_token");
   void fetch("/admin/api/auth/logout", {
     method: "POST",
     headers: {
@@ -54,7 +50,7 @@ function webLogout() {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   }).catch(() => {});
-  localStorage.removeItem("waliapi_admin_token");
+  localStorage.removeItem("damao_admin_token");
   location.assign("/login");
 }
 
@@ -83,14 +79,14 @@ export function Sidebar() {
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
             <img
               src="/logo.png"
-              alt="WaLiAPI"
+              alt="DamaoAPI"
               className="h-full w-full object-cover"
             />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
               <div className="text-[20px] font-bold tracking-[-0.04em] text-slate-900 leading-none">
-                WaLiAPI
+                DamaoAPI
               </div>
               <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
                 v{appVersion}
@@ -181,22 +177,6 @@ export function Sidebar() {
             </div>
           </div>
         </div>
-
-        <button
-          onClick={() => openUrl(githubUrl)}
-          className="flex w-full items-center gap-3 rounded-[18px] border border-slate-200 bg-white/70 px-4 py-3 text-left text-sm text-slate-600 transition-all hover:bg-white hover:text-slate-900 hover:shadow-[0_8px_18px_rgba(15,23,42,0.05)]"
-        >
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white">
-            <Link size={17} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">GitHub 开源仓库</span>
-            <span className="block truncate text-xs text-slate-500">
-              github.com/fuzhengwei/WaLiAPI
-            </span>
-          </span>
-          <ExternalLink size={14} className="text-slate-400" />
-        </button>
 
         {isWebRuntime() && (
           <button

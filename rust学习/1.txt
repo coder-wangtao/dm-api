@@ -1,0 +1,6 @@
+原子：要么整个操作完成，要么整个操作还没发生，中间不会被插进去。
+Arc<AtomicBool> AtomicBool：可以被多个线程安全地读取、修改的布尔值
+比如
+let running = AtomicBool::new(false); 表示：running = false
+running.store(true, Ordering::SeqCst); 相当于：把 running 从 false 改成 true
+这个修改是原子的。

@@ -13,15 +13,24 @@ export function ChannelTabs({ refreshKey = 0 }: { refreshKey?: number }) {
   const [authCount, setAuthCount] = useState<number | null>(null);
 
   useEffect(() => {
-    channelApi.getAll().then(cs => setChannelCount(cs.length)).catch(() => {});
-    authApi.accountsList().then(as => setAuthCount(as.length)).catch(() => {});
+    channelApi
+      .getAll()
+      .then((cs) => setChannelCount(cs.length))
+      .catch(() => {});
+    authApi
+      .accountsList()
+      .then((as) => setAuthCount(as.length))
+      .catch(() => {});
   }, [refreshKey]);
 
   const base =
     "inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-1.5 text-sm font-medium transition-colors";
 
   return (
-    <nav className="flex w-full items-center gap-1 overflow-x-auto border-b border-border" aria-label="渠道视图切换">
+    <nav
+      className="flex w-full items-center gap-1 overflow-x-auto border-b border-border"
+      aria-label="渠道视图切换"
+    >
       <NavLink
         to="/channels"
         end
@@ -38,18 +47,18 @@ export function ChannelTabs({ refreshKey = 0 }: { refreshKey?: number }) {
         )}
       </NavLink>
       <NavLink
-          to="/channels/auth"
-          className={({ isActive }) =>
-            `${base} -mb-px ${isActive ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:border-border hover:text-foreground"}`
-          }
-        >
-          <KeyRound size={15} />
-          Auth 账号
-          {authCount !== null && (
-            <span className="rounded-full bg-blue-50 px-1.5 py-px text-[10px] font-bold leading-4 text-blue-600 tabular-nums">
-              {authCount}
-            </span>
-          )}
+        to="/channels/auth"
+        className={({ isActive }) =>
+          `${base} -mb-px ${isActive ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:border-border hover:text-foreground"}`
+        }
+      >
+        <KeyRound size={15} />
+        Auth 账号
+        {authCount !== null && (
+          <span className="rounded-full bg-blue-50 px-1.5 py-px text-[10px] font-bold leading-4 text-blue-600 tabular-nums">
+            {authCount}
+          </span>
+        )}
       </NavLink>
     </nav>
   );

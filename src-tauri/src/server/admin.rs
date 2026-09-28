@@ -4,7 +4,7 @@
 //! - `/v1/*` 数据面：后台创建的 `sk-waliapi-*` 密钥（handlers 内校验）；
 //! - `/admin/api/*` Web 管理面板：用户名/密码会话（`admin_routes.rs`）；
 //! - RAG 查询：后台创建并授予知识库权限的 API Key；
-//! - KB/Wiki 管理 REST（`/api/kb/*`、`/api/wiki/*`）：`WALIAPI_ADMIN_TOKEN`；
+//! - KB/Wiki 管理 REST（`/api/kb/*`、`/api/wiki/*`）：`DAMAOAPI_ADMIN_TOKEN`；
 //! - MCP（`/mcp*`）：`WALIAPI_MCP_TOKEN`（独立凭证，MCP 客户端不获得管理面权限）。
 //!
 //! 普通 API Key 可查询显式授权的 RAG；未认证访问仍返回 401，管理端凭据保持兼容。
@@ -24,7 +24,7 @@ use super::router::SharedState;
 /// token 建议最小长度（README / compose / systemd 示例均要求 ≥32 字符）。
 pub const MIN_TOKEN_LEN: usize = 32;
 
-/// 服务端点 token 对：`WALIAPI_ADMIN_TOKEN` / `WALIAPI_MCP_TOKEN`。
+/// 服务端点 token 对：`DAMAOAPI_ADMIN_TOKEN` / `DAMAOAPI_MCP_TOKEN`。
 #[derive(Debug, Clone, Default)]
 pub struct ServiceTokens {
     pub admin: Option<Arc<str>>,
@@ -36,8 +36,8 @@ impl ServiceTokens {
     /// 供路由装配（`router::build_router`）与启动告警（`server::start_server`）共用。
     pub fn from_env() -> Self {
         Self {
-            admin: read_token("WALIAPI_ADMIN_TOKEN"),
-            mcp: read_token("WALIAPI_MCP_TOKEN"),
+            admin: read_token("DAMAOAPI_ADMIN_TOKEN"),
+            mcp: read_token("DAMAOAPI_MCP_TOKEN"),
         }
     }
 
@@ -45,8 +45,8 @@ impl ServiceTokens {
     pub fn config_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         for (name, token) in [
-            ("WALIAPI_ADMIN_TOKEN", &self.admin),
-            ("WALIAPI_MCP_TOKEN", &self.mcp),
+            ("DAMAOAPI_ADMIN_TOKEN", &self.admin),
+            ("DAMAOAPI_MCP_TOKEN", &self.mcp),
         ] {
             match token {
                 None => {}
@@ -59,7 +59,7 @@ impl ServiceTokens {
         if let (Some(admin), Some(mcp)) = (&self.admin, &self.mcp) {
             if admin == mcp {
                 warnings.push(
-                    "WALIAPI_ADMIN_TOKEN 与 WALIAPI_MCP_TOKEN 相同：MCP 客户端将同时获得 \
+                    "DAMAOAPI_ADMIN_TOKEN 与 DAMAOAPI_MCP_TOKEN 相同：MCP 客户端将同时获得 \
                      KB/Wiki REST 管理权限，违背最小权限划分，请设置为不同的随机值"
                         .to_string(),
                 );
@@ -76,10 +76,10 @@ impl ServiceTokens {
         }
         let mut missing = Vec::new();
         if self.admin.is_none() {
-            missing.push("WALIAPI_ADMIN_TOKEN（KB/Wiki REST /api/kb、/api/wiki）");
+            missing.push("DAMAOAPI_ADMIN_TOKEN（KB/Wiki REST /api/kb、/api/wiki）");
         }
         if self.mcp.is_none() {
-            missing.push("WALIAPI_MCP_TOKEN（MCP 端点 /mcp）");
+            missing.push("DAMAOAPI_MCP_TOKEN（MCP 端点 /mcp）");
         }
         if missing.is_empty() {
             return None;
@@ -250,7 +250,7 @@ mod tests {
         // 过短
         let warnings = tokens(Some("short"), Some(MCP)).config_warnings();
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("WALIAPI_ADMIN_TOKEN"));
+        assert!(warnings[0].contains("DAMAOAPI_ADMIN_TOKEN"));
 
         // 两个 token 相同
         let warnings = tokens(Some(ADMIN), Some(ADMIN)).config_warnings();
@@ -270,13 +270,13 @@ mod tests {
         assert!(partial.exposure_warning("::1").is_none());
         // 非回环：告警并点名缺失项与仍暴露的面
         let warning = partial.exposure_warning("0.0.0.0").unwrap();
-        assert!(warning.contains("WALIAPI_MCP_TOKEN"));
+        assert!(warning.contains("DAMAOAPI_MCP_TOKEN"));
         assert!(warning.contains("/v1"));
 
         let none = ServiceTokens::default();
         let warning = none.exposure_warning("192.168.1.10").unwrap();
-        assert!(warning.contains("WALIAPI_ADMIN_TOKEN"));
-        assert!(warning.contains("WALIAPI_MCP_TOKEN"));
+        assert!(warning.contains("DAMAOAPI_ADMIN_TOKEN"));
+        assert!(warning.contains("DAMAOAPI_MCP_TOKEN"));
     }
 
     #[test]

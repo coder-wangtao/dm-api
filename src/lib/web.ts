@@ -50,16 +50,19 @@ export function downloadTextFile(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-const ADMIN_TOKEN_KEY = "waliapi_admin_token";
+const ADMIN_TOKEN_KEY = "damao_admin_token";
 
 /**
  * Web 管理面板管理接口请求（仅 Web 运行时调用；桌面端不会触发）。
  * 自动附带 Authorization 头，非 2xx 时抛出携带服务端 error 信息的 Error。
  */
-export async function webAdminFetch<T>(path: string, options?: {
-  method?: string;
-  body?: unknown;
-}): Promise<T> {
+export async function webAdminFetch<T>(
+  path: string,
+  options?: {
+    method?: string;
+    body?: unknown;
+  },
+): Promise<T> {
   const token = localStorage.getItem(ADMIN_TOKEN_KEY);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -69,7 +72,8 @@ export async function webAdminFetch<T>(path: string, options?: {
   const res = await fetch(`/admin/api${path}`, {
     method: options?.method ?? "GET",
     headers,
-    body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body:
+      options?.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
   const text = await res.text();
   let data: unknown = null;

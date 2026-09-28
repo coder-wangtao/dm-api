@@ -2165,6 +2165,7 @@ impl Repository {
 
     /// 按小时粒度统计各模型 Token 趋势
     pub async fn get_token_trend(&self, hours: i64) -> Result<Vec<TokenTrendPoint>, sqlx::Error> {
+        //查询最近 N 小时内，每个小时、每个模型的 Token 使用情况，并返回一个数组。
         let since = chrono::Utc::now()
             .checked_sub_signed(chrono::Duration::hours(hours))
             .unwrap()
@@ -2174,7 +2175,7 @@ impl Repository {
             SELECT
                 strftime('%Y-%m-%dT%H:00:00.000Z', created_at) as hour,
                 model,
-                COALESCE(SUM(prompt_tokens), 0) as input_tokens,
+                COALESCE(SUM(prompt_tokens), 0) as input_tokens, 
                 COALESCE(SUM(completion_tokens), 0) as output_tokens,
                 COALESCE(SUM(cached_tokens), 0) as cached_tokens,
                 COALESCE(SUM(total_tokens), 0) as total_tokens,

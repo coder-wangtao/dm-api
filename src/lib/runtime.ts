@@ -4,12 +4,12 @@ export const WEB_UNAUTHORIZED_EVENT = "damao:web-unauthorized";
 
 /**
  * Web 管理面板的 Bearer token 读取（FIX-14 token 源收敛）：
- * 主源是登录页写入的 localStorage `waliapi_admin_token`（web/src/lib/auth.ts），
+ * 主源是登录页写入的 localStorage `damao_admin_token`（web/src/lib/auth.ts），
  * 兼容读旧的 sessionStorage 键（WebAdminGate 直连模式写入）。
  * 此前 invoke/listen 只读 sessionStorage——登录页从不写那个键，
  * Web 面板的命令调用实际全靠会话 Cookie 兜底，Bearer 形同虚设。
  */
-const WEB_ADMIN_TOKEN_STORAGE_KEY = "waliapi_admin_token";
+const WEB_ADMIN_TOKEN_STORAGE_KEY = "damao_admin_token";
 const WEB_ADMIN_TOKEN_LEGACY_SESSION_KEY = "waliapi.web.admin-token";
 
 export interface RuntimeEvent<T> {

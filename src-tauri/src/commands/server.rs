@@ -11,7 +11,7 @@ pub struct ServerStatus {
 
 #[tauri::command]
 pub async fn get_server_status(
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, Arc<AppState>>, //表示从 Tauri 管理的全局状态中取出 AppState。
 ) -> Result<ServerStatus, String> {
     get_server_status_impl(&*state).await
 }

@@ -1,8 +1,21 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import * as echarts from "echarts/core";
+import { LineChart } from "echarts/charts";
+import { GridComponent, TooltipComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
+import { UniversalTransition } from "echarts/features";
 import { statsApi } from "../lib/api";
 import type { DashboardStats, ModelStats, TokenTrendPoint } from "../types";
 import { formatNumber, formatDuration } from "../lib/constants";
+
+echarts.use([
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  CanvasRenderer,
+  UniversalTransition,
+]);
 import {
   Activity,
   Radio,
@@ -31,15 +44,6 @@ export function DashboardPage() {
   const [modelStats, setModelStats] = useState<ModelStats[]>([]);
   const [tokenTrend, setTokenTrend] = useState<TokenTrendPoint[]>([]);
   const [trendHours, setTrendHours] = useState<24 | 168 | 720>(24);
-  const [showInputToken, setShowInputToken] = useState(true);
-  const [showOutputToken, setShowOutputToken] = useState(true);
-  const [showCachedToken, setShowCachedToken] = useState(true);
-  const [hoverBar, setHoverBar] = useState<{
-    x: number;
-    y: number;
-    hour: string;
-    data: { model: string; input: number; output: number; cached: number }[];
-  } | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const navigate = useNavigate();
@@ -340,15 +344,7 @@ export function DashboardPage() {
       <TokenTrendChart
         data={tokenTrend}
         hours={trendHours}
-        showInput={showInputToken}
-        showOutput={showOutputToken}
-        showCached={showCachedToken}
         onHoursChange={setTrendHours}
-        onToggleInput={() => setShowInputToken((v) => !v)}
-        onToggleOutput={() => setShowOutputToken((v) => !v)}
-        onToggleCached={() => setShowCachedToken((v) => !v)}
-        hoverBar={hoverBar}
-        setHoverBar={setHoverBar}
       />
 
       {/* 运维建议 */}
@@ -728,112 +724,85 @@ function ModelDistributionTable({ data }: { data: ModelStats[] }) {
 }
 
 // ════════════════════════════════════════════════════════════
-// Token 使用趋势图 (纯 SVG 折线图 + 渐变填充)
+// Token 使用趋势图（ECharts：输入 / 输出 / 缓存同时展示）
 // ════════════════════════════════════════════════════════════
 
-const CACHED_LINE_COLOR = "#10b981"; // emerald-500，缓存曲线统一色，与模型配色区分
-
 const TREND_LINE_COLORS = [
-  { stroke: "#3b82f6", fill: "#3b82f6", light: "#93c5fd" }, // blue
-  { stroke: "#10b981", fill: "#10b981", light: "#6ee7b7" }, // emerald
-  { stroke: "#8b5cf6", fill: "#8b5cf6", light: "#c4b5fd" }, // violet
-  { stroke: "#f59e0b", fill: "#f59e0b", light: "#fcd34d" }, // amber
-  { stroke: "#ef4444", fill: "#ef4444", light: "#fca5a5" }, // rose
-  { stroke: "#06b6d4", fill: "#06b6d4", light: "#67e8f9" }, // cyan
-  { stroke: "#6366f1", fill: "#6366f1", light: "#a5b4fc" }, // indigo
-  { stroke: "#14b8a6", fill: "#14b8a6", light: "#5eead4" }, // teal
-  { stroke: "#d946ef", fill: "#d946ef", light: "#f0abfc" }, // fuchsia
-  { stroke: "#f97316", fill: "#f97316", light: "#fdba74" }, // orange
+  "#3b82f6", // blue
+  "#10b981", // emerald
+  "#8b5cf6", // violet
+  "#f59e0b", // amber
+  "#ef4444", // rose
+  "#06b6d4", // cyan
+  "#6366f1", // indigo
+  "#14b8a6", // teal
+  "#d946ef", // fuchsia
+  "#f97316", // orange
 ];
 
-interface TrendHover {
-  x: number;
-  y: number;
-  hour: string;
-  data: { model: string; input: number; output: number; cached: number }[];
+const SERIES_SEP = "\u0001";
+type TrendMetric = "input" | "output" | "cached";
+
+function seriesName(model: string, metric: TrendMetric) {
+  return `${model}${SERIES_SEP}${metric}`;
 }
 
-/** Catmull-Rom → cubic Bézier 转换，生成平滑曲线路径 */
-function smoothPath(points: { x: number; y: number }[]): string {
-  if (points.length === 0) return "";
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  if (points.length === 2)
-    return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
-
-  let d = `M ${points[0].x} ${points[0].y}`;
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[i - 1] || points[i];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[i + 2] || p2;
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = p1.y + (p2.y - p0.y) / 6;
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+function parseSeriesName(name: string): { model: string; metric: TrendMetric } {
+  const index = name.lastIndexOf(SERIES_SEP);
+  if (index < 0) return { model: name, metric: "input" };
+  const metric = name.slice(index + SERIES_SEP.length);
+  if (metric === "output" || metric === "cached" || metric === "input") {
+    return { model: name.slice(0, index), metric };
   }
-  return d;
+  return { model: name, metric: "input" };
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
 }
 
 function TokenTrendChart({
   data,
   hours,
-  showInput,
-  showOutput,
-  showCached,
   onHoursChange,
-  onToggleInput,
-  onToggleOutput,
-  onToggleCached,
-  hoverBar,
-  setHoverBar,
 }: {
   data: TokenTrendPoint[];
   hours: 24 | 168 | 720;
-  showInput: boolean;
-  showOutput: boolean;
-  showCached: boolean;
   onHoursChange: (h: 24 | 168 | 720) => void;
-  onToggleInput: () => void;
-  onToggleOutput: () => void;
-  onToggleCached: () => void;
-  hoverBar: TrendHover | null;
-  setHoverBar: (h: TrendHover | null) => void;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [containerW, setContainerW] = useState(800);
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartInstance = useRef<echarts.EChartsType | null>(null);
+  const [hiddenModels, setHiddenModels] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    const update = () =>
-      setContainerW(containerRef.current?.clientWidth ?? 800);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-
-  // 按小时聚合数据
   const { hoursList, modelList, seriesByModel } = useMemo(() => {
     const modelSet = new Set<string>();
     data.forEach((d) => modelSet.add(d.model));
     const modelsArr = Array.from(modelSet);
 
-    // 构建原始数据 map: hour -> model -> point
     const map = new Map<string, Map<string, TokenTrendPoint>>();
     data.forEach((d) => {
       if (!map.has(d.hour)) map.set(d.hour, new Map());
       map.get(d.hour)!.set(d.model, d);
     });
 
-    // 根据查询范围决定聚合粒度
-    // 日(24h): 1 小时一个点 → 24 点
-    // 周(168h): 3 小时一个点 → 56 点
-    // 月(720h): 1 天一个点 → 30 点
     const bucketMs =
       hours === 24 ? 3600_000 : hours === 168 ? 3 * 3600_000 : 86_400_000;
     const totalBuckets = hours === 24 ? 24 : hours === 168 ? 56 : 30;
 
     const now = new Date();
-    // 对齐到 bucket 起点
     const start = new Date(now);
     if (bucketMs >= 86_400_000) {
       start.setHours(0, 0, 0, 0);
@@ -845,20 +814,17 @@ function TokenTrendChart({
     }
     start.setTime(start.getTime() - bucketMs * (totalBuckets - 1));
 
-    // 生成 bucket 标签和聚合数据
     const hoursArr: string[] = [];
     for (let i = 0; i < totalBuckets; i++) {
       const d = new Date(start.getTime() + i * bucketMs);
       hoursArr.push(d.toISOString());
     }
 
-    // 将原始数据按 bucket 聚合
     const series = modelsArr.map((m) => ({
       model: m,
       points: hoursArr.map((h) => {
         const bucketStart = new Date(h);
         const bucketEnd = new Date(bucketStart.getTime() + bucketMs);
-        // 在此 bucket 范围内累加该模型的数据
         let input = 0,
           output = 0,
           cached = 0,
@@ -884,44 +850,14 @@ function TokenTrendChart({
     return { hoursList: hoursArr, modelList: modelsArr, seriesByModel: series };
   }, [data, hours]);
 
-  // 图例点击显隐模型（隐藏后曲线/hover/Y轴都不再计入）
-  const [hiddenModels, setHiddenModels] = useState<Set<string>>(new Set());
-  const toggleModel = (m: string) => {
+  const toggleModel = (model: string) => {
     setHiddenModels((prev) => {
       const next = new Set(prev);
-      if (next.has(m)) next.delete(m);
-      else next.add(m);
+      if (next.has(model)) next.delete(model);
+      else next.add(model);
       return next;
     });
   };
-  const visibleSeries = useMemo(
-    () => seriesByModel.filter((s) => !hiddenModels.has(s.model)),
-    [seriesByModel, hiddenModels],
-  );
-
-  const chartH = 220;
-  const padding = { top: 20, right: 16, bottom: 36, left: 52 };
-  const chartW = Math.max(containerW - padding.left - padding.right, 100);
-  const stepX = hoursList.length > 1 ? chartW / (hoursList.length - 1) : chartW;
-
-  // Y 轴最大值（选中的所有 mode 中的最大单点值，留 15% headroom）
-  const maxValue = useMemo(() => {
-    let max = 0;
-    visibleSeries.forEach((s) => {
-      s.points.forEach((p) => {
-        if (showInput && p.input > max) max = p.input;
-        if (showOutput && p.output > max) max = p.output;
-        if (showCached && p.cached > max) max = p.cached;
-      });
-    });
-    return max > 0 ? max * 1.15 : 1;
-  }, [visibleSeries, showInput, showOutput, showCached]);
-
-  const yTicks = 5;
-  const yTickValues = Array.from(
-    { length: yTicks + 1 },
-    (_, i) => (maxValue / yTicks) * i,
-  );
 
   const formatHourLabel = (h: string) => {
     const d = new Date(h);
@@ -940,102 +876,193 @@ function TokenTrendChart({
     return `${d.getMonth() + 1}/${d.getDate()}`;
   };
 
-  const formatTick = (v: number) => {
-    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
-    return String(Math.round(v));
-  };
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const chart = echarts.init(el);
+    chartInstance.current = chart;
+    const observer = new ResizeObserver(() => chart.resize());
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      chart.dispose();
+      chartInstance.current = null;
+    };
+  }, []);
 
-  const labelInterval = Math.max(1, Math.floor(hoursList.length / 10));
+  useEffect(() => {
+    const chart = chartInstance.current;
+    if (!chart) return;
+    if (data.length === 0 || modelList.length === 0) {
+      chart.clear();
+      return;
+    }
 
-  // 为每个模型生成 SVG 坐标点（输入和输出各一条线）
-  const lineData = useMemo(() => {
-    const lines: {
-      model: string;
-      type: "input" | "output" | "cached";
-      pts: { x: number; y: number; val: number; hour: string }[];
-      path: string;
-      areaPath: string;
-      colorIdx: number;
-    }[] = [];
-    visibleSeries.forEach((s) => {
-      const idx = Math.max(0, modelList.indexOf(s.model));
-      if (showInput) {
-        const pts = s.points.map((p, i) => ({
-          x: padding.left + i * stepX,
-          y: padding.top + chartH - (p.input / maxValue) * chartH,
-          val: p.input,
-          hour: p.hour,
-        }));
-        lines.push({
-          model: s.model,
-          type: "input",
-          pts,
-          path: smoothPath(pts),
-          areaPath:
-            pts.length > 0
-              ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z`
-              : "",
-          colorIdx: idx,
-        });
-      }
-      if (showOutput) {
-        const pts = s.points.map((p, i) => ({
-          x: padding.left + i * stepX,
-          y: padding.top + chartH - (p.output / maxValue) * chartH,
-          val: p.output,
-          hour: p.hour,
-        }));
-        lines.push({
-          model: s.model,
-          type: "output",
-          pts,
-          path: smoothPath(pts),
-          areaPath:
-            pts.length > 0
-              ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z`
-              : "",
-          colorIdx: idx,
-        });
-      }
-      if (showCached) {
-        const pts = s.points.map((p, i) => ({
-          x: padding.left + i * stepX,
-          y: padding.top + chartH - (p.cached / maxValue) * chartH,
-          val: p.cached,
-          hour: p.hour,
-        }));
-        lines.push({
-          model: s.model,
-          type: "cached",
-          pts,
-          path: smoothPath(pts),
-          areaPath: "",
-          colorIdx: idx,
-        });
-      }
+    const labelInterval = Math.max(1, Math.floor(hoursList.length / 10));
+    const visible = seriesByModel.filter((s) => !hiddenModels.has(s.model));
+    const series = visible.flatMap((s) => {
+      const color =
+        TREND_LINE_COLORS[
+          Math.max(0, modelList.indexOf(s.model)) % TREND_LINE_COLORS.length
+        ];
+      const metrics: {
+        metric: TrendMetric;
+        values: number[];
+        lineType: "solid" | "dashed" | "dotted";
+      }[] = [
+        {
+          metric: "input",
+          values: s.points.map((p) => p.input),
+          lineType: "solid",
+        },
+        {
+          metric: "output",
+          values: s.points.map((p) => p.output),
+          lineType: "dashed",
+        },
+        {
+          metric: "cached",
+          values: s.points.map((p) => p.cached),
+          lineType: "dotted",
+        },
+      ];
+      return metrics.map((item) => ({
+        name: seriesName(s.model, item.metric),
+        type: "line" as const,
+        smooth: true,
+        showSymbol: false,
+        symbol: "circle",
+        symbolSize: 7,
+        color,
+        lineStyle: {
+          width: 2,
+          type: item.lineType,
+          color,
+        },
+        itemStyle: { color },
+        ...(item.metric === "input"
+          ? { areaStyle: { color, opacity: 0.08 } }
+          : {}),
+        data: item.values,
+      }));
     });
-    return lines;
-  }, [
-    visibleSeries,
-    modelList,
-    stepX,
-    showInput,
-    showOutput,
-    showCached,
-    maxValue,
-    chartH,
-    padding,
-  ]);
 
-  // hover 十字线 x 坐标 → 最近的数据点索引
-  const hoverIndex = hoverBar
-    ? Math.round((hoverBar.x - padding.left) / stepX)
-    : -1;
-  const clampedHoverIndex = Math.max(
-    0,
-    Math.min(hoverIndex, hoursList.length - 1),
-  );
+    chart.setOption(
+      {
+        animationDuration: 300,
+        grid: { left: 56, right: 16, top: 16, bottom: 28 },
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: "rgba(255,255,255,0.96)",
+          borderColor: "#e2e8f0",
+          borderWidth: 1,
+          padding: 12,
+          textStyle: { color: "#0f172a", fontSize: 12 },
+          extraCssText:
+            "border-radius:12px;box-shadow:0 12px 32px rgba(15,23,42,0.12);",
+          axisPointer: {
+            type: "line",
+            lineStyle: { color: "#cbd5e1", type: "dashed" },
+          },
+          formatter: (raw: unknown) => {
+            const items = (Array.isArray(raw) ? raw : [raw]) as {
+              seriesName?: string;
+              dataIndex?: number;
+              value?: unknown;
+              color?: string;
+            }[];
+            const dataIndex = items[0]?.dataIndex ?? 0;
+            const title = escapeHtml(
+              formatHourLabel(hoursList[dataIndex] ?? ""),
+            );
+            const byModel = new Map<
+              string,
+              { input: number; output: number; cached: number; color: string }
+            >();
+            for (const item of items) {
+              const parsed = parseSeriesName(item.seriesName ?? "");
+              const value = typeof item.value === "number" ? item.value : 0;
+              const row = byModel.get(parsed.model) ?? {
+                input: 0,
+                output: 0,
+                cached: 0,
+                color: typeof item.color === "string" ? item.color : "#64748b",
+              };
+              row[parsed.metric] = value;
+              byModel.set(parsed.model, row);
+            }
+            const rows = [...byModel.entries()].filter(
+              ([, row]) => row.input > 0 || row.output > 0 || row.cached > 0,
+            );
+            if (rows.length === 0) {
+              return `<div style="font-weight:600">${title}</div><div style="margin-top:6px;color:#94a3b8">无数据</div>`;
+            }
+            const totals = rows.reduce(
+              (sum, [, row]) => ({
+                input: sum.input + row.input,
+                output: sum.output + row.output,
+                cached: sum.cached + row.cached,
+              }),
+              { input: 0, output: 0, cached: 0 },
+            );
+            const body = rows
+              .map(([model, row]) => {
+                return `<div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                  <span style="width:8px;height:8px;border-radius:999px;background:${row.color};flex:none"></span>
+                  <span style="flex:1;color:#475569">${escapeHtml(model)}</span>
+                  <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(row.input)}</span>
+                  <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(row.output)}</span>
+                  <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(row.cached)}</span>
+                </div>`;
+              })
+              .join("");
+            return `<div style="min-width:280px">
+              <div style="font-weight:600">${title}</div>
+              <div style="display:flex;gap:8px;margin-top:8px;color:#94a3b8;font-size:10px">
+                <span style="width:8px"></span>
+                <span style="flex:1">模型</span>
+                <span style="width:64px;text-align:right">输入</span>
+                <span style="width:64px;text-align:right">输出</span>
+                <span style="width:64px;text-align:right">缓存</span>
+              </div>
+              ${body}
+              <div style="display:flex;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid #f1f5f9;font-weight:600">
+                <span style="width:8px"></span>
+                <span style="flex:1;color:#94a3b8;font-weight:400">合计</span>
+                <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(totals.input)}</span>
+                <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(totals.output)}</span>
+                <span style="width:64px;text-align:right;font-variant-numeric:tabular-nums">${formatNumber(totals.cached)}</span>
+              </div>
+            </div>`;
+          },
+        },
+        xAxis: {
+          type: "category",
+          data: hoursList.map(formatHourShort),
+          boundaryGap: false,
+          axisLine: { lineStyle: { color: "#e2e8f0" } },
+          axisTick: { show: false },
+          axisLabel: {
+            color: "#94a3b8",
+            fontSize: 10,
+            interval: labelInterval - 1,
+          },
+        },
+        yAxis: {
+          type: "value",
+          min: 0,
+          axisLabel: {
+            color: "#94a3b8",
+            fontSize: 10,
+            formatter: (value: number) => formatNumber(value),
+          },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+        },
+        series,
+      },
+      true,
+    );
+  }, [data.length, hours, hoursList, modelList, seriesByModel, hiddenModels]);
 
   return (
     <section className="surface rounded-[20px] p-6">
@@ -1051,69 +1078,32 @@ function TokenTrendChart({
                 ? "最近 7 天"
                 : "最近 30 天"}{" "}
             · {hours === 24 ? "按小时" : hours === 168 ? "按 3 小时" : "按天"}
-            粒度 · 按模型分线
+            粒度 · 实线输入 · 虚线输出 · 点线缓存
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          {/* 输入/输出多选切换 */}
-          <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+        <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          {(
+            [
+              { v: 24, label: "日" },
+              { v: 168, label: "周" },
+              { v: 720, label: "月" },
+            ] as const
+          ).map((opt) => (
             <button
-              onClick={onToggleInput}
+              key={opt.v}
+              onClick={() => onHoursChange(opt.v)}
               className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showInput
+                hours === opt.v
                   ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-400 hover:text-slate-600"
+                  : "text-slate-500 hover:text-slate-700"
               }`}
             >
-              输入 Token
+              {opt.label}
             </button>
-            <button
-              onClick={onToggleOutput}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showOutput
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-400 hover:text-slate-600"
-              }`}
-            >
-              输出 Token
-            </button>
-            <button
-              onClick={onToggleCached}
-              className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showCached
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-400 hover:text-slate-600"
-              }`}
-            >
-              缓存命中
-            </button>
-          </div>
-          {/* 日/周/月切换 */}
-          <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-            {(
-              [
-                { v: 24, label: "日" },
-                { v: 168, label: "周" },
-                { v: 720, label: "月" },
-              ] as const
-            ).map((opt) => (
-              <button
-                key={opt.v}
-                onClick={() => onHoursChange(opt.v)}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                  hours === opt.v
-                    ? "bg-white text-slate-900 shadow-sm"
-                    : "text-slate-500 hover:text-slate-700"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          ))}
         </div>
       </div>
 
-      {/* 图例 */}
       {modelList.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           {modelList.map((m, i) => {
@@ -1131,7 +1121,7 @@ function TokenTrendChart({
                   className="h-0.5 w-4 rounded-full"
                   style={{
                     backgroundColor:
-                      TREND_LINE_COLORS[i % TREND_LINE_COLORS.length].stroke,
+                      TREND_LINE_COLORS[i % TREND_LINE_COLORS.length],
                   }}
                 />
                 <span
@@ -1142,330 +1132,14 @@ function TokenTrendChart({
               </button>
             );
           })}
-          <div className="ml-2 flex items-center gap-3 text-[10px] text-slate-400">
-            {showInput && (
-              <span className="flex items-center gap-1">
-                <span className="h-0.5 w-4 rounded-full bg-slate-400" />
-                实线=输入
-              </span>
-            )}
-            {showOutput && (
-              <span className="flex items-center gap-1">
-                <span
-                  className="h-0.5 w-4 rounded-full bg-slate-400"
-                  style={{ borderTop: "2px dashed" }}
-                />
-                虚线=输出
-              </span>
-            )}
-            {showCached && (
-              <span className="flex items-center gap-1">
-                <span
-                  className="h-0.5 w-4 rounded-full"
-                  style={{ backgroundColor: CACHED_LINE_COLOR }}
-                />
-                点线=缓存
-              </span>
-            )}
-          </div>
         </div>
       )}
 
-      {/* 图表 */}
-      <div
-        ref={containerRef}
-        className="relative mt-4"
-        style={{ minHeight: chartH + padding.top + padding.bottom }}
-        onMouseMove={(e) => {
-          if (data.length === 0) return;
-          const rect = containerRef.current!.getBoundingClientRect();
-          const mx = e.clientX - rect.left;
-          const my = e.clientY - rect.top;
-          // 只在图表区域内触发
-          if (mx < padding.left || mx > containerW - padding.right) {
-            setHoverBar(null);
-            return;
-          }
-          const hi = Math.max(
-            0,
-            Math.min(
-              Math.round((mx - padding.left) / stepX),
-              hoursList.length - 1,
-            ),
-          );
-          const hour = hoursList[hi];
-          const hd = visibleSeries
-            .filter((s) => {
-              const p = s.points[hi];
-              return p && (p.input > 0 || p.output > 0 || p.cached > 0);
-            })
-            .map((s) => ({
-              model: s.model,
-              input: s.points[hi].input,
-              output: s.points[hi].output,
-              cached: s.points[hi].cached,
-            }));
-          setHoverBar({ x: mx, y: my, hour, data: hd });
-        }}
-        onMouseLeave={() => setHoverBar(null)}
-      >
-        {data.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-400">
+      <div className="relative mt-4 h-[280px] w-full">
+        <div ref={chartRef} className="h-full w-full" />
+        {data.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">
             暂无趋势数据
-          </div>
-        ) : (
-          <svg
-            width={containerW}
-            height={chartH + padding.top + padding.bottom}
-            className="overflow-visible"
-          >
-            <defs>
-              {/* 每个模型的渐变定义 */}
-              {lineData.map((ld, i) => (
-                <linearGradient
-                  key={i}
-                  id={`trend-grad-${i}`}
-                  x1="0"
-                  y1="0"
-                  x2="0"
-                  y2="1"
-                >
-                  <stop
-                    offset="0%"
-                    stopColor={
-                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length]
-                        .stroke
-                    }
-                    stopOpacity={0.18}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={
-                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length]
-                        .stroke
-                    }
-                    stopOpacity={0}
-                  />
-                </linearGradient>
-              ))}
-            </defs>
-
-            {/* Y 轴网格线 + 标签 */}
-            {yTickValues.map((v, i) => {
-              const y = padding.top + chartH - (v / maxValue) * chartH;
-              return (
-                <g key={i}>
-                  <line
-                    x1={padding.left}
-                    y1={y}
-                    x2={containerW - padding.right}
-                    y2={y}
-                    stroke="#f1f5f9"
-                    strokeWidth={1}
-                  />
-                  <text
-                    x={padding.left - 10}
-                    y={y + 4}
-                    textAnchor="end"
-                    className="fill-slate-400 text-[10px] tabular-nums"
-                  >
-                    {formatTick(v)}
-                  </text>
-                </g>
-              );
-            })}
-
-            {/* 渐变填充区域 */}
-            {lineData.map((ld, i) => (
-              <path
-                key={`area-${i}`}
-                d={ld.areaPath}
-                fill={`url(#trend-grad-${i})`}
-              />
-            ))}
-
-            {/* 折线 */}
-            {lineData.map((ld, i) => {
-              const color =
-                TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
-              return (
-                <path
-                  key={`line-${i}`}
-                  d={ld.path}
-                  fill="none"
-                  stroke={
-                    ld.type === "cached" ? CACHED_LINE_COLOR : color.stroke
-                  }
-                  strokeWidth={2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeDasharray={
-                    ld.type === "output"
-                      ? "6 3"
-                      : ld.type === "cached"
-                        ? "2 3"
-                        : undefined
-                  }
-                  strokeOpacity={ld.type === "cached" ? 0.85 : undefined}
-                />
-              );
-            })}
-
-            {/* Hover 十字线 + 数据点高亮 */}
-            {hoverBar &&
-              clampedHoverIndex >= 0 &&
-              clampedHoverIndex < hoursList.length && (
-                <g>
-                  {/* 垂直虚线 */}
-                  <line
-                    x1={padding.left + clampedHoverIndex * stepX}
-                    y1={padding.top}
-                    x2={padding.left + clampedHoverIndex * stepX}
-                    y2={padding.top + chartH}
-                    stroke="#cbd5e1"
-                    strokeWidth={1}
-                    strokeDasharray="4 4"
-                  />
-                  {/* 每条线上的圆点高亮 */}
-                  {lineData.map((ld, i) => {
-                    const pt = ld.pts[clampedHoverIndex];
-                    if (!pt || pt.val === 0) return null;
-                    const color =
-                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
-                    return (
-                      <g key={`hover-dot-${i}`}>
-                        <circle
-                          cx={pt.x}
-                          cy={pt.y}
-                          r={5}
-                          fill="white"
-                          stroke={color.stroke}
-                          strokeWidth={2.5}
-                        />
-                        <circle cx={pt.x} cy={pt.y} r={2} fill={color.stroke} />
-                      </g>
-                    );
-                  })}
-                </g>
-              )}
-
-            {/* X 轴标签 */}
-            {hoursList.map((h, i) =>
-              i % labelInterval === 0 ? (
-                <text
-                  key={h}
-                  x={padding.left + i * stepX}
-                  y={padding.top + chartH + 20}
-                  textAnchor="middle"
-                  className="fill-slate-400 text-[10px] tabular-nums"
-                >
-                  {formatHourShort(h)}
-                </text>
-              ) : null,
-            )}
-
-            {/* X 轴基线 */}
-            <line
-              x1={padding.left}
-              y1={padding.top + chartH}
-              x2={containerW - padding.right}
-              y2={padding.top + chartH}
-              stroke="#e2e8f0"
-              strokeWidth={1}
-            />
-          </svg>
-        )}
-
-        {/* Hover Tooltip */}
-        {hoverBar && (
-          <div
-            className="pointer-events-none absolute z-10 min-w-[180px] max-w-xs rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm"
-            style={{
-              left: Math.min(hoverBar.x + 16, containerW - 220),
-              top: Math.max(hoverBar.y - 90, 8),
-            }}
-          >
-            <div className="text-xs font-semibold text-slate-900">
-              {formatHourLabel(hoverBar.hour)}
-            </div>
-            <div className="mt-1.5 space-y-1">
-              {hoverBar.data.length === 0 ? (
-                <div className="text-xs text-slate-400">无数据</div>
-              ) : (
-                <>
-                  {/* 表头 */}
-                  <div className="flex items-center gap-2 text-[10px] text-slate-400">
-                    <span className="h-2 w-2" />
-                    <span className="flex-1">模型</span>
-                    {showInput && <span className="w-16 text-right">输入</span>}
-                    {showOutput && (
-                      <span className="w-16 text-right">输出</span>
-                    )}
-                    {showCached && (
-                      <span className="w-16 text-right">缓存</span>
-                    )}
-                  </div>
-                  {hoverBar.data.map((d) => {
-                    const colorIdx = modelList.indexOf(d.model);
-                    const color =
-                      TREND_LINE_COLORS[colorIdx % TREND_LINE_COLORS.length];
-                    return (
-                      <div
-                        key={d.model}
-                        className="flex items-center gap-2 text-xs"
-                      >
-                        <span
-                          className="h-2 w-2 rounded-full"
-                          style={{ backgroundColor: color.stroke }}
-                        />
-                        <span className="flex-1 text-slate-600">{d.model}</span>
-                        {showInput && (
-                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
-                            {formatNumber(d.input)}
-                          </span>
-                        )}
-                        {showOutput && (
-                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
-                            {formatNumber(d.output)}
-                          </span>
-                        )}
-                        {showCached && (
-                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
-                            {formatNumber(d.cached)}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <div className="mt-1.5 border-t border-slate-100 pt-1.5 flex justify-between text-xs">
-                    <span className="text-slate-400">合计</span>
-                    <span className="flex gap-3">
-                      {showInput && (
-                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
-                          {formatNumber(
-                            hoverBar.data.reduce((a, d) => a + d.input, 0),
-                          )}
-                        </span>
-                      )}
-                      {showOutput && (
-                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
-                          {formatNumber(
-                            hoverBar.data.reduce((a, d) => a + d.output, 0),
-                          )}
-                        </span>
-                      )}
-                      {showCached && (
-                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
-                          {formatNumber(
-                            hoverBar.data.reduce((a, d) => a + d.cached, 0),
-                          )}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
           </div>
         )}
       </div>
