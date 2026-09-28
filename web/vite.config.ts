@@ -33,14 +33,6 @@ export default defineConfig({
         find: "@tauri-apps/plugin-dialog",
         replacement: shim("plugin-dialog-shim.ts"),
       },
-      {
-        find: "@tauri-apps/plugin-updater",
-        replacement: shim("plugin-updater-shim.ts"),
-      },
-      {
-        find: "@tauri-apps/plugin-process",
-        replacement: shim("plugin-process-shim.ts"),
-      },
     ],
   },
   server: {

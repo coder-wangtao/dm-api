@@ -23,10 +23,20 @@ import packageJson from "../../../package.json";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "仪表盘" },
-  { to: "/usage", icon: BookOpen, label: "使用", subLabel: "API、Codex ... 配置" },
+  {
+    to: "/usage",
+    icon: BookOpen,
+    label: "使用",
+    subLabel: "API、Codex ... 配置",
+  },
   { to: "/channels", icon: Radio, label: "渠道" },
   { to: "/api-keys", icon: Key, label: "密钥" },
-  { to: "/services", icon: Database, label: "服务", subLabel: "RAG、Wiki、Prompt ..." },
+  {
+    to: "/services",
+    icon: Database,
+    label: "服务",
+    subLabel: "RAG、Wiki、Prompt ...",
+  },
   { to: "/logs", icon: ScrollText, label: "日志" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];
@@ -48,20 +58,20 @@ function webLogout() {
   location.assign("/login");
 }
 
-export function Sidebar({
-  hasUpdate,
-  onCheckUpdate,
-}: {
-  hasUpdate: boolean;
-  onCheckUpdate: () => void;
-}) {
+export function Sidebar() {
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const location = useLocation();
 
   useEffect(() => {
-    serverApi.getStatus().then(setServerStatus).catch(() => {});
+    serverApi
+      .getStatus()
+      .then(setServerStatus)
+      .catch(() => {});
     const interval = setInterval(() => {
-      serverApi.getStatus().then(setServerStatus).catch(() => {});
+      serverApi
+        .getStatus()
+        .then(setServerStatus)
+        .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -71,29 +81,24 @@ export function Sidebar({
       <div className="surface rounded-[22px] p-5">
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
-            <img src="/logo.png" alt="WaLiAPI" className="h-full w-full object-cover" />
+            <img
+              src="/logo.png"
+              alt="WaLiAPI"
+              className="h-full w-full object-cover"
+            />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-[20px] font-bold tracking-[-0.04em] text-slate-900 leading-none">WaLiAPI</div>
-              <button
-                onClick={onCheckUpdate}
-                className={`relative rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
-                  hasUpdate
-                    ? "border-emerald-300 bg-emerald-50 text-emerald-600"
-                    : "border-blue-100 bg-blue-50 text-blue-600 hover:bg-blue-100"
-                }`}
-              >
-                {hasUpdate && (
-                  <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
-                  </span>
-                )}
+              <div className="text-[20px] font-bold tracking-[-0.04em] text-slate-900 leading-none">
+                WaLiAPI
+              </div>
+              <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
                 v{appVersion}
-              </button>
+              </span>
             </div>
-            <div className="mt-1.5 text-[11px] font-medium text-slate-500">AI 网关 · 统一模型配置和负载</div>
+            <div className="mt-1.5 text-[11px] font-medium text-slate-500">
+              AI 网关 · 统一模型配置和负载
+            </div>
           </div>
         </div>
       </div>
@@ -116,17 +121,25 @@ export function Sidebar({
               <Icon size={17} />
             </span>
             <span className="min-w-0 flex flex-1 items-center gap-1.5">
-              <span className="shrink-0 whitespace-nowrap font-medium">{label}</span>
+              <span className="shrink-0 whitespace-nowrap font-medium">
+                {label}
+              </span>
               {subLabel && (
                 <span
                   className="min-w-0 truncate text-[10px] font-normal text-slate-400"
-                  style={{ textShadow: "0 1px 1px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.8)" }}
+                  style={{
+                    textShadow:
+                      "0 1px 1px rgba(0,0,0,0.06), inset 0 0.5px 0 rgba(255,255,255,0.8)",
+                  }}
                 >
                   ({subLabel})
                 </span>
               )}
             </span>
-            <ChevronRight size={15} className="ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-40" />
+            <ChevronRight
+              size={15}
+              className="ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-40"
+            />
           </NavLink>
         ))}
       </nav>
@@ -148,11 +161,18 @@ export function Sidebar({
               >
                 <Settings2 size={14} />
               </NavLink>
-              <span className={`h-2.5 w-2.5 rounded-full ${serverStatus?.running ? "bg-emerald-500" : "bg-rose-500"}`} />
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${serverStatus?.running ? "bg-emerald-500" : "bg-rose-500"}`}
+              />
             </div>
           </div>
           <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">
-            <Server size={14} className={serverStatus?.running ? "text-emerald-500" : "text-rose-500"} />
+            <Server
+              size={14}
+              className={
+                serverStatus?.running ? "text-emerald-500" : "text-rose-500"
+              }
+            />
             <div className="min-w-0 flex-1">
               <div className="mb-1">API BaseUrl 地址</div>
               <div className="truncate font-mono text-[12px] text-slate-700">
@@ -171,7 +191,9 @@ export function Sidebar({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block font-medium">GitHub 开源仓库</span>
-            <span className="block truncate text-xs text-slate-500">github.com/fuzhengwei/WaLiAPI</span>
+            <span className="block truncate text-xs text-slate-500">
+              github.com/fuzhengwei/WaLiAPI
+            </span>
           </span>
           <ExternalLink size={14} className="text-slate-400" />
         </button>

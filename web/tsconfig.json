@@ -27,9 +27,7 @@
       "@tauri-apps/api/event": ["./src/lib/tauri-event-shim.ts"],
       "@tauri-apps/api/app": ["./src/lib/tauri-app-shim.ts"],
       "@tauri-apps/plugin-opener": ["./src/lib/plugin-opener-shim.ts"],
-      "@tauri-apps/plugin-dialog": ["./src/lib/plugin-dialog-shim.ts"],
-      "@tauri-apps/plugin-updater": ["./src/lib/plugin-updater-shim.ts"],
-      "@tauri-apps/plugin-process": ["./src/lib/plugin-process-shim.ts"]
+      "@tauri-apps/plugin-dialog": ["./src/lib/plugin-dialog-shim.ts"]
     },
     "types": ["vite/client"]
   },

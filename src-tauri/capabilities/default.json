@@ -14,8 +14,6 @@
     "notification:default",
     "autostart:default",
     "shell:default",
-    "dialog:default",
-    "updater:default",
-    "process:default"
+    "dialog:default"
   ]
 }

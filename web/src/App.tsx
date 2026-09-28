@@ -117,7 +117,7 @@ function App() {
             path="/*"
             element={
               <RequireAuth>
-                <Layout hasUpdate={false} onCheckUpdate={() => {}}>
+                <Layout>
                   <Routes>
                     <Route path="/" element={<DashboardPage />} />
                     <Route path="/usage" element={<UsagePage />} />

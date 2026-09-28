@@ -34,27 +34,44 @@ export function DashboardPage() {
   const [showInputToken, setShowInputToken] = useState(true);
   const [showOutputToken, setShowOutputToken] = useState(true);
   const [showCachedToken, setShowCachedToken] = useState(true);
-  const [hoverBar, setHoverBar] = useState<{ x: number; y: number; hour: string; data: { model: string; input: number; output: number; cached: number }[] } | null>(null);
+  const [hoverBar, setHoverBar] = useState<{
+    x: number;
+    y: number;
+    hour: string;
+    data: { model: string; input: number; output: number; cached: number }[];
+  } | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const doLoad = () => statsApi.getDashboard().then(setStats).catch(() => setLoadError(true));
+    const doLoad = () =>
+      statsApi
+        .getDashboard()
+        .then(setStats)
+        .catch(() => setLoadError(true));
     doLoad();
     const interval = setInterval(doLoad, 10000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    const doLoad = () => statsApi.getModelStats().then(setModelStats).catch(() => {});
+    const doLoad = () =>
+      statsApi
+        .getModelStats()
+        .then(setModelStats)
+        .catch(() => {});
     doLoad();
     const interval = setInterval(doLoad, 10000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    const doLoad = () => statsApi.getTokenTrend(trendHours).then(setTokenTrend).catch(() => {});
+    const doLoad = () =>
+      statsApi
+        .getTokenTrend(trendHours)
+        .then(setTokenTrend)
+        .catch(() => {});
     doLoad();
     const interval = setInterval(doLoad, 30000);
     return () => clearInterval(interval);
@@ -64,7 +81,12 @@ export function DashboardPage() {
     return (
       <div className="page-shell flex flex-col items-center justify-center gap-3 text-sm text-slate-500">
         <p>数据加载失败，请检查服务是否已启动。</p>
-        <button onClick={() => window.location.reload()} className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700">重新加载</button>
+        <button
+          onClick={() => window.location.reload()}
+          className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700"
+        >
+          重新加载
+        </button>
       </div>
     );
   }
@@ -75,40 +97,136 @@ export function DashboardPage() {
 
   // 服务可用率 = 可用上游 / 全部上游，上游包含 API 渠道与 Auth 账号两类。
   // 字段缺失（旧后端 + 新前端的版本错位）按 0 优雅降级，避免 NaN（NEW-4）。
-  const activeUpstreams = (stats.active_channels ?? 0) + (stats.active_auth_accounts ?? 0);
-  const totalUpstreams = (stats.total_channels ?? 0) + (stats.total_auth_accounts ?? 0);
-  const availability = totalUpstreams > 0 ? Math.round((activeUpstreams / totalUpstreams) * 100) : 0;
+  const activeUpstreams =
+    (stats.active_channels ?? 0) + (stats.active_auth_accounts ?? 0);
+  const totalUpstreams =
+    (stats.total_channels ?? 0) + (stats.total_auth_accounts ?? 0);
+  const availability =
+    totalUpstreams > 0
+      ? Math.round((activeUpstreams / totalUpstreams) * 100)
+      : 0;
 
   // 上 5：请求与渠道 | 下 5：知识服务
   const cacheRate = (cached: number, prompt: number) =>
     prompt > 0 ? `${Math.round((cached / prompt) * 100)}%` : "0%";
 
   const topMetrics = [
-    { label: "今日请求", value: formatNumber(stats.today_requests), icon: Activity, color: "text-blue-600", tone: "bg-blue-50" },
-    { label: "今日 Token", value: formatNumber(stats.today_total_tokens), icon: Zap, color: "text-amber-600", tone: "bg-amber-50" },
-    { label: "今日缓存命中", value: cacheRate(stats.today_cached_tokens, stats.today_prompt_tokens), sub: `节省 ${formatNumber(stats.today_cached_tokens)} tokens`, icon: DatabaseZap, color: "text-emerald-600", tone: "bg-emerald-50" },
-    { label: "累计请求", value: formatNumber(stats.total_requests), icon: TrendingUp, color: "text-indigo-600", tone: "bg-indigo-50" },
-    { label: "累计 Token", value: formatNumber(stats.total_tokens), icon: Zap, color: "text-orange-600", tone: "bg-orange-50" },
-    { label: "活跃上游", value: `${activeUpstreams}/${totalUpstreams}`, sub: `渠道 ${stats.active_channels}/${stats.total_channels} · 账号 ${stats.active_auth_accounts}/${stats.total_auth_accounts}`, icon: Radio, color: "text-teal-600", tone: "bg-teal-50" },
+    {
+      label: "今日请求",
+      value: formatNumber(stats.today_requests),
+      icon: Activity,
+      color: "text-blue-600",
+      tone: "bg-blue-50",
+    },
+    {
+      label: "今日 Token",
+      value: formatNumber(stats.today_total_tokens),
+      icon: Zap,
+      color: "text-amber-600",
+      tone: "bg-amber-50",
+    },
+    {
+      label: "今日缓存命中",
+      value: cacheRate(stats.today_cached_tokens, stats.today_prompt_tokens),
+      sub: `节省 ${formatNumber(stats.today_cached_tokens)} tokens`,
+      icon: DatabaseZap,
+      color: "text-emerald-600",
+      tone: "bg-emerald-50",
+    },
+    {
+      label: "累计请求",
+      value: formatNumber(stats.total_requests),
+      icon: TrendingUp,
+      color: "text-indigo-600",
+      tone: "bg-indigo-50",
+    },
+    {
+      label: "累计 Token",
+      value: formatNumber(stats.total_tokens),
+      icon: Zap,
+      color: "text-orange-600",
+      tone: "bg-orange-50",
+    },
+    {
+      label: "活跃上游",
+      value: `${activeUpstreams}/${totalUpstreams}`,
+      sub: `渠道 ${stats.active_channels}/${stats.total_channels} · 账号 ${stats.active_auth_accounts}/${stats.total_auth_accounts}`,
+      icon: Radio,
+      color: "text-teal-600",
+      tone: "bg-teal-50",
+    },
   ];
   const bottomMetrics = [
-    { label: "平均延迟", value: formatDuration(Math.round(stats.avg_latency_ms)), icon: Workflow, color: "text-violet-600", tone: "bg-violet-50" },
-    { label: "累计缓存命中", value: cacheRate(stats.total_cached_tokens, stats.total_prompt_tokens), sub: `节省 ${formatNumber(stats.total_cached_tokens)} tokens`, icon: DatabaseZap, color: "text-lime-600", tone: "bg-lime-50" },
-    { label: "RAG", value: formatNumber(stats.total_knowledge_bases), icon: Database, color: "text-cyan-600", tone: "bg-cyan-50" },
-    { label: "RAG 文档", value: formatNumber(stats.total_kb_documents), icon: Layers, color: "text-teal-600", tone: "bg-teal-50" },
-    { label: "Wiki", value: formatNumber(stats.total_wiki_projects), icon: Network, color: "text-fuchsia-600", tone: "bg-fuchsia-50" },
-    { label: "Wiki 页面", value: formatNumber(stats.total_wiki_pages), icon: FileText, color: "text-pink-600", tone: "bg-pink-50" },
+    {
+      label: "平均延迟",
+      value: formatDuration(Math.round(stats.avg_latency_ms)),
+      icon: Workflow,
+      color: "text-violet-600",
+      tone: "bg-violet-50",
+    },
+    {
+      label: "累计缓存命中",
+      value: cacheRate(stats.total_cached_tokens, stats.total_prompt_tokens),
+      sub: `节省 ${formatNumber(stats.total_cached_tokens)} tokens`,
+      icon: DatabaseZap,
+      color: "text-lime-600",
+      tone: "bg-lime-50",
+    },
+    {
+      label: "RAG",
+      value: formatNumber(stats.total_knowledge_bases),
+      icon: Database,
+      color: "text-cyan-600",
+      tone: "bg-cyan-50",
+    },
+    {
+      label: "RAG 文档",
+      value: formatNumber(stats.total_kb_documents),
+      icon: Layers,
+      color: "text-teal-600",
+      tone: "bg-teal-50",
+    },
+    {
+      label: "Wiki",
+      value: formatNumber(stats.total_wiki_projects),
+      icon: Network,
+      color: "text-fuchsia-600",
+      tone: "bg-fuchsia-50",
+    },
+    {
+      label: "Wiki 页面",
+      value: formatNumber(stats.total_wiki_pages),
+      icon: FileText,
+      color: "text-pink-600",
+      tone: "bg-pink-50",
+    },
   ];
 
   const quickActions = [
     { title: "新建渠道", icon: Plus, action: () => navigate("/channels") },
     { title: "管理密钥", icon: Key, action: () => navigate("/api-keys") },
-    { title: "创建 RAG", icon: Database, action: () => navigate("/services/knowledge-base") },
-    { title: "Wiki 知识库", icon: Network, action: () => navigate("/services/wiki") },
-    { title: "Skills", icon: Puzzle, action: () => navigate("/services/skills") },
+    {
+      title: "创建 RAG",
+      icon: Database,
+      action: () => navigate("/services/knowledge-base"),
+    },
+    {
+      title: "Wiki 知识库",
+      icon: Network,
+      action: () => navigate("/services/wiki"),
+    },
+    {
+      title: "Skills",
+      icon: Puzzle,
+      action: () => navigate("/services/skills"),
+    },
     { title: "接入示例", icon: BookOpen, action: () => navigate("/usage") },
     { title: "审计日志", icon: FileText, action: () => navigate("/logs") },
-    { title: "安全设置", icon: ShieldCheck, action: () => navigate("/settings") },
+    {
+      title: "安全设置",
+      icon: ShieldCheck,
+      action: () => navigate("/settings"),
+    },
     { title: "渠道管理", icon: Globe, action: () => navigate("/channels") },
     { title: "MCP", icon: Terminal, action: () => navigate("/services/mcp") },
   ];
@@ -123,7 +241,9 @@ export function DashboardPage() {
               <Workflow className="h-3.5 w-3.5" /> 控制台首页
             </div>
             <div className="mt-4 flex items-center gap-2">
-              <h1 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">欢迎使用 WaLiAPI</h1>
+              <h1 className="text-3xl font-semibold tracking-[-0.03em] text-slate-900">
+                欢迎使用 DamaoAPI
+              </h1>
               <button
                 onClick={() => setShowHelp(true)}
                 className="inline-flex items-center justify-center rounded-full border border-slate-200 bg-slate-50 p-1 text-slate-400 transition-all hover:border-blue-200 hover:bg-blue-50 hover:text-blue-600"
@@ -133,7 +253,8 @@ export function DashboardPage() {
               </button>
             </div>
             <p className="mt-2.5 text-sm leading-6 text-slate-500 md:text-[15px]">
-              在一个统一入口中管理上游模型渠道、下游密钥、请求统计与故障切换，让本地 LLM 网关更稳定、更清晰、更易运维。
+              在一个统一入口中管理上游模型渠道、下游密钥、请求统计与故障切换，让本地
+              LLM 网关更稳定、更清晰、更易运维。
             </p>
 
             {/* 快速操作按钮 */}
@@ -153,11 +274,19 @@ export function DashboardPage() {
 
           {/* 健康度徽章 */}
           <div className="flex gap-3 xl:w-auto">
-            <div className={`flex items-center gap-2.5 rounded-2xl border px-4 py-3 ${availability >= 80 ? "border-emerald-200 bg-emerald-50" : availability >= 50 ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"}`}>
-              <ShieldCheck className={`h-5 w-5 ${availability >= 80 ? "text-emerald-600" : availability >= 50 ? "text-amber-600" : "text-rose-600"}`} />
+            <div
+              className={`flex items-center gap-2.5 rounded-2xl border px-4 py-3 ${availability >= 80 ? "border-emerald-200 bg-emerald-50" : availability >= 50 ? "border-amber-200 bg-amber-50" : "border-rose-200 bg-rose-50"}`}
+            >
+              <ShieldCheck
+                className={`h-5 w-5 ${availability >= 80 ? "text-emerald-600" : availability >= 50 ? "text-amber-600" : "text-rose-600"}`}
+              />
               <div>
                 <div className="text-xs text-slate-500">服务可用率</div>
-                <div className={`text-lg font-semibold ${availability >= 80 ? "text-emerald-700" : availability >= 50 ? "text-amber-700" : "text-rose-700"}`}>{availability}%</div>
+                <div
+                  className={`text-lg font-semibold ${availability >= 80 ? "text-emerald-700" : availability >= 50 ? "text-amber-700" : "text-rose-700"}`}
+                >
+                  {availability}%
+                </div>
               </div>
             </div>
           </div>
@@ -173,9 +302,13 @@ export function DashboardPage() {
                 <Icon className={`h-4 w-4 ${color}`} />
               </div>
             </div>
-            <div className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{value}</div>
+            <div className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">
+              {value}
+            </div>
             <div className="text-xs text-slate-500">{label}</div>
-            {sub && <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>}
+            {sub && (
+              <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>
+            )}
           </div>
         ))}
       </div>
@@ -189,9 +322,13 @@ export function DashboardPage() {
                 <Icon className={`h-4 w-4 ${color}`} />
               </div>
             </div>
-            <div className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">{value}</div>
+            <div className="mt-3 text-2xl font-semibold tracking-tight text-slate-900">
+              {value}
+            </div>
             <div className="text-xs text-slate-500">{label}</div>
-            {sub && <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>}
+            {sub && (
+              <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>
+            )}
           </div>
         ))}
       </div>
@@ -207,9 +344,9 @@ export function DashboardPage() {
         showOutput={showOutputToken}
         showCached={showCachedToken}
         onHoursChange={setTrendHours}
-        onToggleInput={() => setShowInputToken(v => !v)}
-        onToggleOutput={() => setShowOutputToken(v => !v)}
-        onToggleCached={() => setShowCachedToken(v => !v)}
+        onToggleInput={() => setShowInputToken((v) => !v)}
+        onToggleOutput={() => setShowOutputToken((v) => !v)}
+        onToggleCached={() => setShowCachedToken((v) => !v)}
         hoverBar={hoverBar}
         setHoverBar={setHoverBar}
       />
@@ -219,7 +356,9 @@ export function DashboardPage() {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-900">运维建议</h2>
-            <p className="mt-1 text-sm text-slate-500">根据当前系统状态给出的运维参考</p>
+            <p className="mt-1 text-sm text-slate-500">
+              根据当前系统状态给出的运维参考
+            </p>
           </div>
           <TrendingUp className="h-5 w-5 text-slate-400" />
         </div>
@@ -227,7 +366,9 @@ export function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2">
               <Radio className="h-4 w-4 text-emerald-600" />
-              <span className="text-sm font-medium text-slate-900">渠道健康度</span>
+              <span className="text-sm font-medium text-slate-900">
+                渠道健康度
+              </span>
             </div>
             <p className="mt-1.5 text-sm text-slate-500">
               {availability >= 80
@@ -240,7 +381,9 @@ export function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2">
               <Key className="h-4 w-4 text-indigo-600" />
-              <span className="text-sm font-medium text-slate-900">密钥配额</span>
+              <span className="text-sm font-medium text-slate-900">
+                密钥配额
+              </span>
             </div>
             <p className="mt-1.5 text-sm text-slate-500">
               {stats.total_api_keys > 0
@@ -251,7 +394,9 @@ export function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2">
               <Activity className="h-4 w-4 text-blue-600" />
-              <span className="text-sm font-medium text-slate-900">性能监控</span>
+              <span className="text-sm font-medium text-slate-900">
+                性能监控
+              </span>
             </div>
             <p className="mt-1.5 text-sm text-slate-500">
               {stats.avg_latency_ms < 2000
@@ -273,7 +418,9 @@ export function DashboardPage() {
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center gap-2">
               <Network className="h-4 w-4 text-fuchsia-600" />
-              <span className="text-sm font-medium text-slate-900">Wiki 知识库</span>
+              <span className="text-sm font-medium text-slate-900">
+                Wiki 知识库
+              </span>
             </div>
             <p className="mt-1.5 text-sm text-slate-500">
               {stats.total_wiki_projects > 0
@@ -292,7 +439,7 @@ export function DashboardPage() {
         >
           <div
             className="relative my-auto w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-3xl bg-white p-7 shadow-2xl"
-            onClick={e => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <button
               onClick={() => setShowHelp(false)}
@@ -306,68 +453,77 @@ export function DashboardPage() {
                 <HelpCircle className="h-5 w-5 text-blue-600" />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">快速上手指南</h2>
-                <p className="text-xs text-slate-500">几步完成本地 LLM 网关配置</p>
+                <h2 className="text-lg font-semibold text-slate-900">
+                  快速上手指南
+                </h2>
+                <p className="text-xs text-slate-500">
+                  几步完成本地 LLM 网关配置
+                </p>
               </div>
             </div>
 
             <div className="mt-5 space-y-3.5">
               {[
-            {
-              num: "1",
-              required: true,
-              title: "添加上游渠道",
-              desc: "进入「渠道管理」页面，点击「新建渠道」，填写名称、Base URL、API Key 和支持的模型，保存即可。",
-              route: "/channels",
-              routeLabel: "前往渠道管理",
-            },
-            {
-              num: "2",
-              required: true,
-              title: "创建本地密钥",
-              desc: "进入「API 密钥」页面，点击「新建密钥」生成 `sk-waliapi-*` 格式的本地访问令牌，用于下游客户端调用。",
-              route: "/api-keys",
-              routeLabel: "前往 API 密钥",
-            },
-            {
-              num: "3",
-              required: true,
-              title: "查看接入示例",
-              desc: "进入「接入示例」页面，复制 cURL / Python / Node.js 代码，将 `base_url` 指向 `http://127.0.0.1:8777/v1`，使用本地密钥即可调用。",
-              route: "/usage",
-              routeLabel: "前往接入示例",
-            },
-            {
-              num: "4",
-              required: false,
-              title: "配置服务与重试",
-              desc: "在「设置 → 服务配置」中调整监听地址与端口；在「重试策略」中开启失败自动重试，提升服务稳定性。",
-              route: "/settings",
-              routeLabel: "前往设置",
-            },
-            {
-              num: "5",
-              required: false,
-              title: "开启安全审计",
-              desc: "在「设置 → 安全审计」中启用请求风险检测，自动识别凭证泄露、敏感路径、工具外联与 Unicode 隐写。",
-              route: "/settings",
-              routeLabel: "前往安全设置",
-            },
-          ].map(step => (
+                {
+                  num: "1",
+                  required: true,
+                  title: "添加上游渠道",
+                  desc: "进入「渠道管理」页面，点击「新建渠道」，填写名称、Base URL、API Key 和支持的模型，保存即可。",
+                  route: "/channels",
+                  routeLabel: "前往渠道管理",
+                },
+                {
+                  num: "2",
+                  required: true,
+                  title: "创建本地密钥",
+                  desc: "进入「API 密钥」页面，点击「新建密钥」生成 `sk-waliapi-*` 格式的本地访问令牌，用于下游客户端调用。",
+                  route: "/api-keys",
+                  routeLabel: "前往 API 密钥",
+                },
+                {
+                  num: "3",
+                  required: true,
+                  title: "查看接入示例",
+                  desc: "进入「接入示例」页面，复制 cURL / Python / Node.js 代码，将 `base_url` 指向 `http://127.0.0.1:8777/v1`，使用本地密钥即可调用。",
+                  route: "/usage",
+                  routeLabel: "前往接入示例",
+                },
+                {
+                  num: "4",
+                  required: false,
+                  title: "配置服务与重试",
+                  desc: "在「设置 → 服务配置」中调整监听地址与端口；在「重试策略」中开启失败自动重试，提升服务稳定性。",
+                  route: "/settings",
+                  routeLabel: "前往设置",
+                },
+                {
+                  num: "5",
+                  required: false,
+                  title: "开启安全审计",
+                  desc: "在「设置 → 安全审计」中启用请求风险检测，自动识别凭证泄露、敏感路径、工具外联与 Unicode 隐写。",
+                  route: "/settings",
+                  routeLabel: "前往安全设置",
+                },
+              ].map((step) => (
                 <div
                   key={step.num}
                   className="rounded-2xl border border-slate-200 bg-slate-50 p-4"
                 >
                   <div className="flex items-start gap-3">
-                    <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${step.required ? "bg-blue-600" : "bg-slate-400"}`}>
+                    <div
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white ${step.required ? "bg-blue-600" : "bg-slate-400"}`}
+                    >
                       {step.num}
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-slate-900">{step.title}</span>
+                        <span className="text-sm font-medium text-slate-900">
+                          {step.title}
+                        </span>
                         {step.required ? (
                           <span className="inline-flex items-center gap-0.5 rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-                            <Check className="h-2.5 w-2.5" />必选
+                            <Check className="h-2.5 w-2.5" />
+                            必选
                           </span>
                         ) : (
                           <span className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
@@ -375,7 +531,9 @@ export function DashboardPage() {
                           </span>
                         )}
                       </div>
-                      <p className="mt-1 text-sm leading-5 text-slate-500">{step.desc}</p>
+                      <p className="mt-1 text-sm leading-5 text-slate-500">
+                        {step.desc}
+                      </p>
                       <button
                         onClick={() => {
                           navigate(step.route);
@@ -396,9 +554,12 @@ export function DashboardPage() {
               <div className="flex items-start gap-2.5">
                 <FileText className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
                 <div>
-                  <div className="text-sm font-medium text-emerald-900">调用后可查看审计日志</div>
+                  <div className="text-sm font-medium text-emerald-900">
+                    调用后可查看审计日志
+                  </div>
                   <p className="mt-1 text-xs leading-5 text-emerald-700">
-                    发起请求后，进入「审计日志」页面查看每次调用的状态码、Token 消耗、工具调用、安全风险等级与上游路由详情。
+                    发起请求后，进入「审计日志」页面查看每次调用的状态码、Token
+                    消耗、工具调用、安全风险等级与上游路由详情。
                   </p>
                   <button
                     onClick={() => {
@@ -415,8 +576,10 @@ export function DashboardPage() {
 
             <div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-100 px-4 py-3">
               <span className="text-xs text-slate-500">
-                <span className="font-semibold text-slate-700">1、2、3</span> 为必选步骤 ·{" "}
-                <span className="font-semibold text-slate-700">4、5</span> 为可选增强
+                <span className="font-semibold text-slate-700">1、2、3</span>{" "}
+                为必选步骤 ·{" "}
+                <span className="font-semibold text-slate-700">4、5</span>{" "}
+                为可选增强
               </span>
               <button
                 onClick={() => setShowHelp(false)}
@@ -437,20 +600,29 @@ export function DashboardPage() {
 // ════════════════════════════════════════════════════════════
 
 const MODEL_COLORS = [
-  "bg-blue-500", "bg-emerald-500", "bg-violet-500", "bg-amber-500",
-  "bg-rose-500", "bg-cyan-500", "bg-indigo-500", "bg-teal-500",
-  "bg-fuchsia-500", "bg-orange-500",
+  "bg-blue-500",
+  "bg-emerald-500",
+  "bg-violet-500",
+  "bg-amber-500",
+  "bg-rose-500",
+  "bg-cyan-500",
+  "bg-indigo-500",
+  "bg-teal-500",
+  "bg-fuchsia-500",
+  "bg-orange-500",
 ];
 
 function ModelDistributionTable({ data }: { data: ModelStats[] }) {
-  const maxTokens = Math.max(...data.map(d => d.total_tokens), 1);
+  const maxTokens = Math.max(...data.map((d) => d.total_tokens), 1);
 
   return (
     <section className="surface rounded-[20px] p-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">模型分布</h2>
-          <p className="mt-1 text-sm text-slate-500">各模型调用次数、Token 消耗、缓存命中与成功率</p>
+          <p className="mt-1 text-sm text-slate-500">
+            各模型调用次数、Token 消耗、缓存命中与成功率
+          </p>
         </div>
         <Layers className="h-5 w-5 text-slate-400" />
       </div>
@@ -477,43 +649,74 @@ function ModelDistributionTable({ data }: { data: ModelStats[] }) {
             </thead>
             <tbody>
               {data.map((row, i) => (
-                <tr key={row.model} className="border-b border-slate-100 last:border-0">
+                <tr
+                  key={row.model}
+                  className="border-b border-slate-100 last:border-0"
+                >
                   <td className="py-2.5 pr-4">
                     <div className="flex items-center gap-2">
-                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${MODEL_COLORS[i % MODEL_COLORS.length]}`} />
-                      <span className="font-medium text-slate-900">{row.model}</span>
+                      <span
+                        className={`h-2.5 w-2.5 shrink-0 rounded-full ${MODEL_COLORS[i % MODEL_COLORS.length]}`}
+                      />
+                      <span className="font-medium text-slate-900">
+                        {row.model}
+                      </span>
                     </div>
                   </td>
-                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-600">{formatNumber(row.request_count)}</td>
-                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">{formatNumber(row.input_tokens)}</td>
-                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">{formatNumber(row.output_tokens)}</td>
+                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-600">
+                    {formatNumber(row.request_count)}
+                  </td>
+                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">
+                    {formatNumber(row.input_tokens)}
+                  </td>
+                  <td className="py-2.5 pr-4 text-right tabular-nums text-slate-500">
+                    {formatNumber(row.output_tokens)}
+                  </td>
                   <td className="py-2.5 pr-4 text-right tabular-nums">
                     {(row.cached_tokens ?? 0) > 0 ? (
                       <div>
-                        <div className="font-medium text-emerald-600">{formatNumber(row.cached_tokens)}</div>
+                        <div className="font-medium text-emerald-600">
+                          {formatNumber(row.cached_tokens)}
+                        </div>
                         <div className="text-[10px] text-slate-400">
-                          {row.input_tokens > 0 ? `${((row.cached_tokens / row.input_tokens) * 100).toFixed(1)}%` : "-"}
+                          {row.input_tokens > 0
+                            ? `${((row.cached_tokens / row.input_tokens) * 100).toFixed(1)}%`
+                            : "-"}
                         </div>
                       </div>
                     ) : (
                       <span className="text-slate-300">-</span>
                     )}
                   </td>
-                  <td className="py-2.5 pr-4 text-right tabular-nums font-medium text-slate-900">{formatNumber(row.total_tokens)}</td>
+                  <td className="py-2.5 pr-4 text-right tabular-nums font-medium text-slate-900">
+                    {formatNumber(row.total_tokens)}
+                  </td>
                   <td className="py-2.5 pr-4">
                     <div className="h-1.5 w-full rounded-full bg-slate-100">
                       <div
                         className={`h-1.5 rounded-full ${MODEL_COLORS[i % MODEL_COLORS.length]}`}
-                        style={{ width: `${(row.total_tokens / maxTokens) * 100}%` }}
+                        style={{
+                          width: `${(row.total_tokens / maxTokens) * 100}%`,
+                        }}
                       />
                     </div>
                   </td>
                   <td className="py-2.5 pr-4 text-right tabular-nums">
-                    <span className={row.success_rate >= 0.95 ? "text-emerald-600" : row.success_rate >= 0.8 ? "text-amber-600" : "text-rose-600"}>
+                    <span
+                      className={
+                        row.success_rate >= 0.95
+                          ? "text-emerald-600"
+                          : row.success_rate >= 0.8
+                            ? "text-amber-600"
+                            : "text-rose-600"
+                      }
+                    >
                       {(row.success_rate * 100).toFixed(1)}%
                     </span>
                   </td>
-                  <td className="py-2.5 text-right tabular-nums text-slate-500">{formatDuration(Math.round(row.avg_latency_ms))}</td>
+                  <td className="py-2.5 text-right tabular-nums text-slate-500">
+                    {formatDuration(Math.round(row.avg_latency_ms))}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -554,7 +757,8 @@ interface TrendHover {
 function smoothPath(points: { x: number; y: number }[]): string {
   if (points.length === 0) return "";
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  if (points.length === 2) return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
+  if (points.length === 2)
+    return `M ${points[0].x} ${points[0].y} L ${points[1].x} ${points[1].y}`;
 
   let d = `M ${points[0].x} ${points[0].y}`;
   for (let i = 0; i < points.length - 1; i++) {
@@ -600,7 +804,8 @@ function TokenTrendChart({
   const [containerW, setContainerW] = useState(800);
 
   useEffect(() => {
-    const update = () => setContainerW(containerRef.current?.clientWidth ?? 800);
+    const update = () =>
+      setContainerW(containerRef.current?.clientWidth ?? 800);
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
@@ -609,12 +814,12 @@ function TokenTrendChart({
   // 按小时聚合数据
   const { hoursList, modelList, seriesByModel } = useMemo(() => {
     const modelSet = new Set<string>();
-    data.forEach(d => modelSet.add(d.model));
+    data.forEach((d) => modelSet.add(d.model));
     const modelsArr = Array.from(modelSet);
 
     // 构建原始数据 map: hour -> model -> point
     const map = new Map<string, Map<string, TokenTrendPoint>>();
-    data.forEach(d => {
+    data.forEach((d) => {
       if (!map.has(d.hour)) map.set(d.hour, new Map());
       map.get(d.hour)!.set(d.model, d);
     });
@@ -623,7 +828,8 @@ function TokenTrendChart({
     // 日(24h): 1 小时一个点 → 24 点
     // 周(168h): 3 小时一个点 → 56 点
     // 月(720h): 1 天一个点 → 30 点
-    const bucketMs = hours === 24 ? 3600_000 : hours === 168 ? 3 * 3600_000 : 86_400_000;
+    const bucketMs =
+      hours === 24 ? 3600_000 : hours === 168 ? 3 * 3600_000 : 86_400_000;
     const totalBuckets = hours === 24 ? 24 : hours === 168 ? 56 : 30;
 
     const now = new Date();
@@ -633,7 +839,9 @@ function TokenTrendChart({
       start.setHours(0, 0, 0, 0);
     } else {
       start.setMinutes(0, 0, 0);
-      start.setMinutes(start.getMinutes() - (start.getMinutes() % (bucketMs / 60_000)));
+      start.setMinutes(
+        start.getMinutes() - (start.getMinutes() % (bucketMs / 60_000)),
+      );
     }
     start.setTime(start.getTime() - bucketMs * (totalBuckets - 1));
 
@@ -645,13 +853,17 @@ function TokenTrendChart({
     }
 
     // 将原始数据按 bucket 聚合
-    const series = modelsArr.map(m => ({
+    const series = modelsArr.map((m) => ({
       model: m,
-      points: hoursArr.map(h => {
+      points: hoursArr.map((h) => {
         const bucketStart = new Date(h);
         const bucketEnd = new Date(bucketStart.getTime() + bucketMs);
         // 在此 bucket 范围内累加该模型的数据
-        let input = 0, output = 0, cached = 0, total = 0, requests = 0;
+        let input = 0,
+          output = 0,
+          cached = 0,
+          total = 0,
+          requests = 0;
         for (const [rawHour, modelMap] of map) {
           const rawDate = new Date(rawHour);
           if (rawDate >= bucketStart && rawDate < bucketEnd) {
@@ -675,15 +887,16 @@ function TokenTrendChart({
   // 图例点击显隐模型（隐藏后曲线/hover/Y轴都不再计入）
   const [hiddenModels, setHiddenModels] = useState<Set<string>>(new Set());
   const toggleModel = (m: string) => {
-    setHiddenModels(prev => {
+    setHiddenModels((prev) => {
       const next = new Set(prev);
-      if (next.has(m)) next.delete(m); else next.add(m);
+      if (next.has(m)) next.delete(m);
+      else next.add(m);
       return next;
     });
   };
   const visibleSeries = useMemo(
-    () => seriesByModel.filter(s => !hiddenModels.has(s.model)),
-    [seriesByModel, hiddenModels]
+    () => seriesByModel.filter((s) => !hiddenModels.has(s.model)),
+    [seriesByModel, hiddenModels],
   );
 
   const chartH = 220;
@@ -694,8 +907,8 @@ function TokenTrendChart({
   // Y 轴最大值（选中的所有 mode 中的最大单点值，留 15% headroom）
   const maxValue = useMemo(() => {
     let max = 0;
-    visibleSeries.forEach(s => {
-      s.points.forEach(p => {
+    visibleSeries.forEach((s) => {
+      s.points.forEach((p) => {
         if (showInput && p.input > max) max = p.input;
         if (showOutput && p.output > max) max = p.output;
         if (showCached && p.cached > max) max = p.cached;
@@ -705,19 +918,25 @@ function TokenTrendChart({
   }, [visibleSeries, showInput, showOutput, showCached]);
 
   const yTicks = 5;
-  const yTickValues = Array.from({ length: yTicks + 1 }, (_, i) => (maxValue / yTicks) * i);
+  const yTickValues = Array.from(
+    { length: yTicks + 1 },
+    (_, i) => (maxValue / yTicks) * i,
+  );
 
   const formatHourLabel = (h: string) => {
     const d = new Date(h);
-    if (hours === 24) return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:00`;
-    if (hours === 168) return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:00`;
+    if (hours === 24)
+      return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:00`;
+    if (hours === 168)
+      return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:00`;
     return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
   };
 
   const formatHourShort = (h: string) => {
     const d = new Date(h);
     if (hours === 24) return `${String(d.getHours()).padStart(2, "0")}:00`;
-    if (hours === 168) return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}h`;
+    if (hours === 168)
+      return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}h`;
     return `${d.getMonth() + 1}/${d.getDate()}`;
   };
 
@@ -731,53 +950,108 @@ function TokenTrendChart({
 
   // 为每个模型生成 SVG 坐标点（输入和输出各一条线）
   const lineData = useMemo(() => {
-    const lines: { model: string; type: "input" | "output" | "cached"; pts: { x: number; y: number; val: number; hour: string }[]; path: string; areaPath: string; colorIdx: number }[] = [];
+    const lines: {
+      model: string;
+      type: "input" | "output" | "cached";
+      pts: { x: number; y: number; val: number; hour: string }[];
+      path: string;
+      areaPath: string;
+      colorIdx: number;
+    }[] = [];
     visibleSeries.forEach((s) => {
       const idx = Math.max(0, modelList.indexOf(s.model));
       if (showInput) {
         const pts = s.points.map((p, i) => ({
           x: padding.left + i * stepX,
-          y: padding.top + chartH - p.input / maxValue * chartH,
+          y: padding.top + chartH - (p.input / maxValue) * chartH,
           val: p.input,
           hour: p.hour,
         }));
-        lines.push({ model: s.model, type: "input", pts, path: smoothPath(pts), areaPath: pts.length > 0 ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z` : "", colorIdx: idx });
+        lines.push({
+          model: s.model,
+          type: "input",
+          pts,
+          path: smoothPath(pts),
+          areaPath:
+            pts.length > 0
+              ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z`
+              : "",
+          colorIdx: idx,
+        });
       }
       if (showOutput) {
         const pts = s.points.map((p, i) => ({
           x: padding.left + i * stepX,
-          y: padding.top + chartH - p.output / maxValue * chartH,
+          y: padding.top + chartH - (p.output / maxValue) * chartH,
           val: p.output,
           hour: p.hour,
         }));
-        lines.push({ model: s.model, type: "output", pts, path: smoothPath(pts), areaPath: pts.length > 0 ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z` : "", colorIdx: idx });
+        lines.push({
+          model: s.model,
+          type: "output",
+          pts,
+          path: smoothPath(pts),
+          areaPath:
+            pts.length > 0
+              ? `${smoothPath(pts)} L ${pts[pts.length - 1].x} ${padding.top + chartH} L ${pts[0].x} ${padding.top + chartH} Z`
+              : "",
+          colorIdx: idx,
+        });
       }
       if (showCached) {
         const pts = s.points.map((p, i) => ({
           x: padding.left + i * stepX,
-          y: padding.top + chartH - p.cached / maxValue * chartH,
+          y: padding.top + chartH - (p.cached / maxValue) * chartH,
           val: p.cached,
           hour: p.hour,
         }));
-        lines.push({ model: s.model, type: "cached", pts, path: smoothPath(pts), areaPath: "", colorIdx: idx });
+        lines.push({
+          model: s.model,
+          type: "cached",
+          pts,
+          path: smoothPath(pts),
+          areaPath: "",
+          colorIdx: idx,
+        });
       }
     });
     return lines;
-  }, [visibleSeries, modelList, stepX, showInput, showOutput, showCached, maxValue, chartH, padding]);
+  }, [
+    visibleSeries,
+    modelList,
+    stepX,
+    showInput,
+    showOutput,
+    showCached,
+    maxValue,
+    chartH,
+    padding,
+  ]);
 
   // hover 十字线 x 坐标 → 最近的数据点索引
   const hoverIndex = hoverBar
     ? Math.round((hoverBar.x - padding.left) / stepX)
     : -1;
-  const clampedHoverIndex = Math.max(0, Math.min(hoverIndex, hoursList.length - 1));
+  const clampedHoverIndex = Math.max(
+    0,
+    Math.min(hoverIndex, hoursList.length - 1),
+  );
 
   return (
     <section className="surface rounded-[20px] p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">Token 使用趋势</h2>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Token 使用趋势
+          </h2>
           <p className="mt-1 text-sm text-slate-500">
-            {hours === 24 ? "最近 24 小时" : hours === 168 ? "最近 7 天" : "最近 30 天"} · {hours === 24 ? "按小时" : hours === 168 ? "按 3 小时" : "按天"}粒度 · 按模型分线
+            {hours === 24
+              ? "最近 24 小时"
+              : hours === 168
+                ? "最近 7 天"
+                : "最近 30 天"}{" "}
+            · {hours === 24 ? "按小时" : hours === 168 ? "按 3 小时" : "按天"}
+            粒度 · 按模型分线
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -786,7 +1060,9 @@ function TokenTrendChart({
             <button
               onClick={onToggleInput}
               className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showInput ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                showInput
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-400 hover:text-slate-600"
               }`}
             >
               输入 Token
@@ -794,7 +1070,9 @@ function TokenTrendChart({
             <button
               onClick={onToggleOutput}
               className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showOutput ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                showOutput
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-400 hover:text-slate-600"
               }`}
             >
               输出 Token
@@ -802,7 +1080,9 @@ function TokenTrendChart({
             <button
               onClick={onToggleCached}
               className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                showCached ? "bg-white text-slate-900 shadow-sm" : "text-slate-400 hover:text-slate-600"
+                showCached
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-400 hover:text-slate-600"
               }`}
             >
               缓存命中
@@ -810,16 +1090,20 @@ function TokenTrendChart({
           </div>
           {/* 日/周/月切换 */}
           <div className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-            {([
-              { v: 24, label: "日" },
-              { v: 168, label: "周" },
-              { v: 720, label: "月" },
-            ] as const).map(opt => (
+            {(
+              [
+                { v: 24, label: "日" },
+                { v: 168, label: "周" },
+                { v: 720, label: "月" },
+              ] as const
+            ).map((opt) => (
               <button
                 key={opt.v}
                 onClick={() => onHoursChange(opt.v)}
                 className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
-                  hours === opt.v ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  hours === opt.v
+                    ? "bg-white text-slate-900 shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
                 }`}
               >
                 {opt.label}
@@ -845,16 +1129,44 @@ function TokenTrendChart({
               >
                 <span
                   className="h-0.5 w-4 rounded-full"
-                  style={{ backgroundColor: TREND_LINE_COLORS[i % TREND_LINE_COLORS.length].stroke }}
+                  style={{
+                    backgroundColor:
+                      TREND_LINE_COLORS[i % TREND_LINE_COLORS.length].stroke,
+                  }}
                 />
-                <span className={`text-xs ${hidden ? "text-slate-400 line-through" : "text-slate-600"}`}>{m}</span>
+                <span
+                  className={`text-xs ${hidden ? "text-slate-400 line-through" : "text-slate-600"}`}
+                >
+                  {m}
+                </span>
               </button>
             );
           })}
           <div className="ml-2 flex items-center gap-3 text-[10px] text-slate-400">
-            {showInput && <span className="flex items-center gap-1"><span className="h-0.5 w-4 rounded-full bg-slate-400" />实线=输入</span>}
-            {showOutput && <span className="flex items-center gap-1"><span className="h-0.5 w-4 rounded-full bg-slate-400" style={{ borderTop: "2px dashed" }} />虚线=输出</span>}
-            {showCached && <span className="flex items-center gap-1"><span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: CACHED_LINE_COLOR }} />点线=缓存</span>}
+            {showInput && (
+              <span className="flex items-center gap-1">
+                <span className="h-0.5 w-4 rounded-full bg-slate-400" />
+                实线=输入
+              </span>
+            )}
+            {showOutput && (
+              <span className="flex items-center gap-1">
+                <span
+                  className="h-0.5 w-4 rounded-full bg-slate-400"
+                  style={{ borderTop: "2px dashed" }}
+                />
+                虚线=输出
+              </span>
+            )}
+            {showCached && (
+              <span className="flex items-center gap-1">
+                <span
+                  className="h-0.5 w-4 rounded-full"
+                  style={{ backgroundColor: CACHED_LINE_COLOR }}
+                />
+                点线=缓存
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -864,7 +1176,7 @@ function TokenTrendChart({
         ref={containerRef}
         className="relative mt-4"
         style={{ minHeight: chartH + padding.top + padding.bottom }}
-        onMouseMove={e => {
+        onMouseMove={(e) => {
           if (data.length === 0) return;
           const rect = containerRef.current!.getBoundingClientRect();
           const mx = e.clientX - rect.left;
@@ -874,14 +1186,25 @@ function TokenTrendChart({
             setHoverBar(null);
             return;
           }
-          const hi = Math.max(0, Math.min(Math.round((mx - padding.left) / stepX), hoursList.length - 1));
+          const hi = Math.max(
+            0,
+            Math.min(
+              Math.round((mx - padding.left) / stepX),
+              hoursList.length - 1,
+            ),
+          );
           const hour = hoursList[hi];
           const hd = visibleSeries
-            .filter(s => {
+            .filter((s) => {
               const p = s.points[hi];
               return p && (p.input > 0 || p.output > 0 || p.cached > 0);
             })
-            .map(s => ({ model: s.model, input: s.points[hi].input, output: s.points[hi].output, cached: s.points[hi].cached }));
+            .map((s) => ({
+              model: s.model,
+              input: s.points[hi].input,
+              output: s.points[hi].output,
+              cached: s.points[hi].cached,
+            }));
           setHoverBar({ x: mx, y: my, hour, data: hd });
         }}
         onMouseLeave={() => setHoverBar(null)}
@@ -902,10 +1225,27 @@ function TokenTrendChart({
                 <linearGradient
                   key={i}
                   id={`trend-grad-${i}`}
-                  x1="0" y1="0" x2="0" y2="1"
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="1"
                 >
-                  <stop offset="0%" stopColor={TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length].stroke} stopOpacity={0.18} />
-                  <stop offset="100%" stopColor={TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length].stroke} stopOpacity={0} />
+                  <stop
+                    offset="0%"
+                    stopColor={
+                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length]
+                        .stroke
+                    }
+                    stopOpacity={0.18}
+                  />
+                  <stop
+                    offset="100%"
+                    stopColor={
+                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length]
+                        .stroke
+                    }
+                    stopOpacity={0}
+                  />
                 </linearGradient>
               ))}
             </defs>
@@ -946,61 +1286,68 @@ function TokenTrendChart({
 
             {/* 折线 */}
             {lineData.map((ld, i) => {
-              const color = TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
+              const color =
+                TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
               return (
                 <path
                   key={`line-${i}`}
                   d={ld.path}
                   fill="none"
-                  stroke={ld.type === "cached" ? CACHED_LINE_COLOR : color.stroke}
+                  stroke={
+                    ld.type === "cached" ? CACHED_LINE_COLOR : color.stroke
+                  }
                   strokeWidth={2}
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeDasharray={ld.type === "output" ? "6 3" : ld.type === "cached" ? "2 3" : undefined}
+                  strokeDasharray={
+                    ld.type === "output"
+                      ? "6 3"
+                      : ld.type === "cached"
+                        ? "2 3"
+                        : undefined
+                  }
                   strokeOpacity={ld.type === "cached" ? 0.85 : undefined}
                 />
               );
             })}
 
             {/* Hover 十字线 + 数据点高亮 */}
-            {hoverBar && clampedHoverIndex >= 0 && clampedHoverIndex < hoursList.length && (
-              <g>
-                {/* 垂直虚线 */}
-                <line
-                  x1={padding.left + clampedHoverIndex * stepX}
-                  y1={padding.top}
-                  x2={padding.left + clampedHoverIndex * stepX}
-                  y2={padding.top + chartH}
-                  stroke="#cbd5e1"
-                  strokeWidth={1}
-                  strokeDasharray="4 4"
-                />
-                {/* 每条线上的圆点高亮 */}
-                {lineData.map((ld, i) => {
-                  const pt = ld.pts[clampedHoverIndex];
-                  if (!pt || pt.val === 0) return null;
-                  const color = TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
-                  return (
-                    <g key={`hover-dot-${i}`}>
-                      <circle
-                        cx={pt.x}
-                        cy={pt.y}
-                        r={5}
-                        fill="white"
-                        stroke={color.stroke}
-                        strokeWidth={2.5}
-                      />
-                      <circle
-                        cx={pt.x}
-                        cy={pt.y}
-                        r={2}
-                        fill={color.stroke}
-                      />
-                    </g>
-                  );
-                })}
-              </g>
-            )}
+            {hoverBar &&
+              clampedHoverIndex >= 0 &&
+              clampedHoverIndex < hoursList.length && (
+                <g>
+                  {/* 垂直虚线 */}
+                  <line
+                    x1={padding.left + clampedHoverIndex * stepX}
+                    y1={padding.top}
+                    x2={padding.left + clampedHoverIndex * stepX}
+                    y2={padding.top + chartH}
+                    stroke="#cbd5e1"
+                    strokeWidth={1}
+                    strokeDasharray="4 4"
+                  />
+                  {/* 每条线上的圆点高亮 */}
+                  {lineData.map((ld, i) => {
+                    const pt = ld.pts[clampedHoverIndex];
+                    if (!pt || pt.val === 0) return null;
+                    const color =
+                      TREND_LINE_COLORS[ld.colorIdx % TREND_LINE_COLORS.length];
+                    return (
+                      <g key={`hover-dot-${i}`}>
+                        <circle
+                          cx={pt.x}
+                          cy={pt.y}
+                          r={5}
+                          fill="white"
+                          stroke={color.stroke}
+                          strokeWidth={2.5}
+                        />
+                        <circle cx={pt.x} cy={pt.y} r={2} fill={color.stroke} />
+                      </g>
+                    );
+                  })}
+                </g>
+              )}
 
             {/* X 轴标签 */}
             {hoursList.map((h, i) =>
@@ -1014,7 +1361,7 @@ function TokenTrendChart({
                 >
                   {formatHourShort(h)}
                 </text>
-              ) : null
+              ) : null,
             )}
 
             {/* X 轴基线 */}
@@ -1034,10 +1381,7 @@ function TokenTrendChart({
           <div
             className="pointer-events-none absolute z-10 min-w-[180px] max-w-xs rounded-xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-sm"
             style={{
-              left: Math.min(
-                hoverBar.x + 16,
-                containerW - 220,
-              ),
+              left: Math.min(hoverBar.x + 16, containerW - 220),
               top: Math.max(hoverBar.y - 90, 8),
             }}
           >
@@ -1054,31 +1398,69 @@ function TokenTrendChart({
                     <span className="h-2 w-2" />
                     <span className="flex-1">模型</span>
                     {showInput && <span className="w-16 text-right">输入</span>}
-                    {showOutput && <span className="w-16 text-right">输出</span>}
-                    {showCached && <span className="w-16 text-right">缓存</span>}
+                    {showOutput && (
+                      <span className="w-16 text-right">输出</span>
+                    )}
+                    {showCached && (
+                      <span className="w-16 text-right">缓存</span>
+                    )}
                   </div>
                   {hoverBar.data.map((d) => {
                     const colorIdx = modelList.indexOf(d.model);
-                    const color = TREND_LINE_COLORS[colorIdx % TREND_LINE_COLORS.length];
+                    const color =
+                      TREND_LINE_COLORS[colorIdx % TREND_LINE_COLORS.length];
                     return (
-                      <div key={d.model} className="flex items-center gap-2 text-xs">
+                      <div
+                        key={d.model}
+                        className="flex items-center gap-2 text-xs"
+                      >
                         <span
                           className="h-2 w-2 rounded-full"
                           style={{ backgroundColor: color.stroke }}
                         />
                         <span className="flex-1 text-slate-600">{d.model}</span>
-                        {showInput && <span className="w-16 text-right font-medium tabular-nums text-slate-900">{formatNumber(d.input)}</span>}
-                        {showOutput && <span className="w-16 text-right font-medium tabular-nums text-slate-900">{formatNumber(d.output)}</span>}
-                        {showCached && <span className="w-16 text-right font-medium tabular-nums text-slate-900">{formatNumber(d.cached)}</span>}
+                        {showInput && (
+                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
+                            {formatNumber(d.input)}
+                          </span>
+                        )}
+                        {showOutput && (
+                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
+                            {formatNumber(d.output)}
+                          </span>
+                        )}
+                        {showCached && (
+                          <span className="w-16 text-right font-medium tabular-nums text-slate-900">
+                            {formatNumber(d.cached)}
+                          </span>
+                        )}
                       </div>
                     );
                   })}
                   <div className="mt-1.5 border-t border-slate-100 pt-1.5 flex justify-between text-xs">
                     <span className="text-slate-400">合计</span>
                     <span className="flex gap-3">
-                      {showInput && <span className="w-16 text-right font-semibold tabular-nums text-slate-900">{formatNumber(hoverBar.data.reduce((a, d) => a + d.input, 0))}</span>}
-                      {showOutput && <span className="w-16 text-right font-semibold tabular-nums text-slate-900">{formatNumber(hoverBar.data.reduce((a, d) => a + d.output, 0))}</span>}
-                      {showCached && <span className="w-16 text-right font-semibold tabular-nums text-slate-900">{formatNumber(hoverBar.data.reduce((a, d) => a + d.cached, 0))}</span>}
+                      {showInput && (
+                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
+                          {formatNumber(
+                            hoverBar.data.reduce((a, d) => a + d.input, 0),
+                          )}
+                        </span>
+                      )}
+                      {showOutput && (
+                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
+                          {formatNumber(
+                            hoverBar.data.reduce((a, d) => a + d.output, 0),
+                          )}
+                        </span>
+                      )}
+                      {showCached && (
+                        <span className="w-16 text-right font-semibold tabular-nums text-slate-900">
+                          {formatNumber(
+                            hoverBar.data.reduce((a, d) => a + d.cached, 0),
+                          )}
+                        </span>
+                      )}
                     </span>
                   </div>
                 </>

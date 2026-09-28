@@ -2,9 +2,36 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { channelApi, importExportApi } from "../lib/api";
 import type { ChannelStats } from "../lib/api";
 import type { Channel } from "../types";
-import { getProtocolLabel, getChannelProviderLabel, formatTime, formatNumber, formatDuration } from "../lib/constants";
+import {
+  getProtocolLabel,
+  getChannelProviderLabel,
+  formatTime,
+  formatNumber,
+  formatDuration,
+} from "../lib/constants";
 import { downloadTextFile, isWebRuntime } from "../lib/web";
-import { Plus, Radio, Trash2, Zap, Power, Edit, Download, ChevronDown, Upload, Loader2, X, Activity, Clock, GripVertical, Eye, EyeOff, Copy, Check, AlertCircle, Terminal } from "lucide-react";
+import {
+  Plus,
+  Radio,
+  Trash2,
+  Zap,
+  Power,
+  Edit,
+  Download,
+  ChevronDown,
+  Upload,
+  Loader2,
+  X,
+  Activity,
+  Clock,
+  GripVertical,
+  Eye,
+  EyeOff,
+  Copy,
+  Check,
+  AlertCircle,
+  Terminal,
+} from "lucide-react";
 import { ChannelForm } from "../components/ChannelForm";
 import { ImportDialog } from "../components/ImportDialog";
 import { ChannelTabs } from "../components/layout/ChannelTabs";
@@ -13,12 +40,16 @@ import { buildChannelCurl } from "../lib/curl";
 
 export function ChannelsPage() {
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [channelStats, setChannelStats] = useState<Record<string, ChannelStats>>({});
+  const [channelStats, setChannelStats] = useState<
+    Record<string, ChannelStats>
+  >({});
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Channel | null>(null);
   const [duplicating, setDuplicating] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<Record<string, { success: boolean; message: string; latency_ms: number }>>({});
+  const [testResult, setTestResult] = useState<
+    Record<string, { success: boolean; message: string; latency_ms: number }>
+  >({});
   const [showImport, setShowImport] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -32,8 +63,12 @@ export function ChannelsPage() {
   const [showKeyMap, setShowKeyMap] = useState<Record<string, boolean>>({});
   const [fullKeyMap, setFullKeyMap] = useState<Record<string, string>>({});
   const [keyLoading, setKeyLoading] = useState<string | null>(null);
-  const [extraKeyVisibleMap, setExtraKeyVisibleMap] = useState<Record<string, boolean>>({});
-  const [extraKeyFullMap, setExtraKeyFullMap] = useState<Record<string, string>>({});
+  const [extraKeyVisibleMap, setExtraKeyVisibleMap] = useState<
+    Record<string, boolean>
+  >({});
+  const [extraKeyFullMap, setExtraKeyFullMap] = useState<
+    Record<string, string>
+  >({});
   const [extraKeyLoading, setExtraKeyLoading] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [copiedModel, setCopiedModel] = useState<string | null>(null);
@@ -42,22 +77,35 @@ export function ChannelsPage() {
   const dragCounter = useRef(0);
 
   const load = useCallback(() => {
-    channelApi.getAll().then(setChannels).catch(() => {});
-    channelApi.getStats().then(stats => {
-      const map: Record<string, ChannelStats> = {};
-      stats.forEach(s => { map[s.channel_id] = s; });
-      setChannelStats(map);
-    }).catch(() => {});
+    channelApi
+      .getAll()
+      .then(setChannels)
+      .catch(() => {});
+    channelApi
+      .getStats()
+      .then((stats) => {
+        const map: Record<string, ChannelStats> = {};
+        stats.forEach((s) => {
+          map[s.channel_id] = s;
+        });
+        setChannelStats(map);
+      })
+      .catch(() => {});
     Promise.all([channelApi.getAll(), channelApi.getStats()])
       .then(() => setLoadError(false))
       .catch(() => setLoadError(true));
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (importMenuRef.current && !importMenuRef.current.contains(e.target as Node)) {
+      if (
+        importMenuRef.current &&
+        !importMenuRef.current.contains(e.target as Node)
+      ) {
         setShowImportMenu(false);
       }
     };
@@ -68,7 +116,12 @@ export function ChannelsPage() {
   const handleExport = async () => {
     // 导出内容包含全部渠道的明文 API 密钥（GAP-05）：误点即把密钥落盘到
     // 下载目录，先确认再执行。
-    if (!confirm("导出的 JSON 包含所有渠道的明文 API 密钥，请妥善保管。确定导出？")) return;
+    if (
+      !confirm(
+        "导出的 JSON 包含所有渠道的明文 API 密钥，请妥善保管。确定导出？",
+      )
+    )
+      return;
     setExporting(true);
     try {
       const content = await importExportApi.exportChannels();
@@ -89,9 +142,12 @@ export function ChannelsPage() {
     setTesting(id);
     try {
       const result = await channelApi.test(id);
-      setTestResult(prev => ({ ...prev, [id]: result }));
+      setTestResult((prev) => ({ ...prev, [id]: result }));
     } catch (e: any) {
-      setTestResult(prev => ({ ...prev, [id]: { success: false, message: String(e), latency_ms: 0 } }));
+      setTestResult((prev) => ({
+        ...prev,
+        [id]: { success: false, message: String(e), latency_ms: 0 },
+      }));
     }
     setTesting(null);
   };
@@ -122,32 +178,49 @@ export function ChannelsPage() {
   };
 
   // 映射模型 开启/关闭（迁移 041）：乐观更新 + 即时保存，失败回滚
-  const handleToggleMapping = async (ch: Channel, name: string, target: string, currentlyOff: boolean) => {
+  const handleToggleMapping = async (
+    ch: Channel,
+    name: string,
+    target: string,
+    currentlyOff: boolean,
+  ) => {
     const current = ch.model_mapping_disabled ?? [];
     const next = currentlyOff
-      ? current.filter(d => !(d[0] === name && d[1] === target))
-      : [...current.filter(d => !(d[0] === name && d[1] === target)), [name, target]];
-    setChannels(prev => prev.map(c => (c.id === ch.id ? { ...c, model_mapping_disabled: next } : c)));
+      ? current.filter((d) => !(d[0] === name && d[1] === target))
+      : [
+          ...current.filter((d) => !(d[0] === name && d[1] === target)),
+          [name, target],
+        ];
+    setChannels((prev) =>
+      prev.map((c) =>
+        c.id === ch.id ? { ...c, model_mapping_disabled: next } : c,
+      ),
+    );
     try {
       await channelApi.update({ id: ch.id, model_mapping_disabled: next });
     } catch (e) {
-      setChannels(prev => prev.map(c => (c.id === ch.id ? { ...c, model_mapping_disabled: current } : c)));
+      setChannels((prev) =>
+        prev.map((c) =>
+          c.id === ch.id ? { ...c, model_mapping_disabled: current } : c,
+        ),
+      );
       console.error("Failed to toggle mapping:", e);
       setActionError(`切换映射状态失败: ${String(e)}`);
     }
   };
 
   // API Key 显示/隐藏切换
-  const handleToggleKey = async (ch: Channel) => {    const next = !showKeyMap[ch.id];
-    setShowKeyMap(prev => ({ ...prev, [ch.id]: next }));
+  const handleToggleKey = async (ch: Channel) => {
+    const next = !showKeyMap[ch.id];
+    setShowKeyMap((prev) => ({ ...prev, [ch.id]: next }));
     if (next && !fullKeyMap[ch.id]) {
       setKeyLoading(ch.id);
       try {
         const fullKey = await channelApi.getApiKey(ch.id);
-        setFullKeyMap(prev => ({ ...prev, [ch.id]: fullKey }));
+        setFullKeyMap((prev) => ({ ...prev, [ch.id]: fullKey }));
       } catch (e) {
         console.error("Failed to get API key:", e);
-        setShowKeyMap(prev => ({ ...prev, [ch.id]: false }));
+        setShowKeyMap((prev) => ({ ...prev, [ch.id]: false }));
       } finally {
         setKeyLoading(null);
       }
@@ -157,15 +230,15 @@ export function ChannelsPage() {
   // 切换额外 Key 显隐
   const handleToggleExtraKey = async (keyId: string) => {
     const next = !extraKeyVisibleMap[keyId];
-    setExtraKeyVisibleMap(prev => ({ ...prev, [keyId]: next }));
+    setExtraKeyVisibleMap((prev) => ({ ...prev, [keyId]: next }));
     if (next && !extraKeyFullMap[keyId]) {
       setExtraKeyLoading(keyId);
       try {
         const fullKey = await channelApi.getExtraKeyValue(keyId);
-        setExtraKeyFullMap(prev => ({ ...prev, [keyId]: fullKey }));
+        setExtraKeyFullMap((prev) => ({ ...prev, [keyId]: fullKey }));
       } catch (e) {
         console.error("Failed to get extra key value:", e);
-        setExtraKeyVisibleMap(prev => ({ ...prev, [keyId]: false }));
+        setExtraKeyVisibleMap((prev) => ({ ...prev, [keyId]: false }));
       } finally {
         setExtraKeyLoading(null);
       }
@@ -188,7 +261,7 @@ export function ChannelsPage() {
       let keyToCopy = fullKeyMap[ch.id];
       if (!keyToCopy) {
         keyToCopy = await channelApi.getApiKey(ch.id);
-        setFullKeyMap(prev => ({ ...prev, [ch.id]: keyToCopy }));
+        setFullKeyMap((prev) => ({ ...prev, [ch.id]: keyToCopy }));
       }
       await writeClipboard(keyToCopy);
       setCopiedKey(ch.id);
@@ -205,7 +278,7 @@ export function ChannelsPage() {
       let keyToCopy = fullKeyMap[ch.id];
       if (!keyToCopy) {
         keyToCopy = await channelApi.getApiKey(ch.id);
-        setFullKeyMap(prev => ({ ...prev, [ch.id]: keyToCopy }));
+        setFullKeyMap((prev) => ({ ...prev, [ch.id]: keyToCopy }));
       }
       const curl = buildChannelCurl({
         protocol: ch.protocol,
@@ -213,8 +286,8 @@ export function ChannelsPage() {
         models: ch.models,
         apiKey: keyToCopy,
         extraHeaders: (ch.request_headers ?? [])
-          .filter(h => h.status === 1)
-          .map(h => ({ name: h.name, value: h.value })),
+          .filter((h) => h.status === 1)
+          .map((h) => ({ name: h.name, value: h.value })),
       });
       await writeClipboard(curl);
       setCopiedCurl(ch.id);
@@ -247,8 +320,8 @@ export function ChannelsPage() {
   const handleDrop = async (e: React.DragEvent, targetId: string) => {
     e.preventDefault();
     if (!draggedId || draggedId === targetId) return;
-    const fromIdx = channels.findIndex(c => c.id === draggedId);
-    const toIdx = channels.findIndex(c => c.id === targetId);
+    const fromIdx = channels.findIndex((c) => c.id === draggedId);
+    const toIdx = channels.findIndex((c) => c.id === targetId);
     if (fromIdx === -1 || toIdx === -1) return;
     const next = [...channels];
     const [moved] = next.splice(fromIdx, 1);
@@ -257,7 +330,7 @@ export function ChannelsPage() {
     setDraggedId(null);
     setDragOverId(null);
     try {
-      await channelApi.reorder(next.map(c => c.id));
+      await channelApi.reorder(next.map((c) => c.id));
     } catch (err) {
       console.error("reorder failed:", err);
       load(); // revert on failure
@@ -270,38 +343,68 @@ export function ChannelsPage() {
         <div className="flex w-full items-start justify-between gap-4 pb-1.5">
           <div>
             <h1 className="page-title">渠道管理</h1>
-            <p className="page-subtitle mt-0.5">配置上游 API 供应商与调度优先级</p>
+            <p className="page-subtitle mt-0.5">
+              配置上游 API 供应商与调度优先级
+            </p>
           </div>
-        <div className="flex items-center gap-2">
-          <><button onClick={handleExport} disabled={exporting} className="action-secondary flex items-center gap-1.5">
-            {exporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-            导出
-          </button>
-          <div className="relative" ref={importMenuRef}>
-            <button onClick={() => setShowImportMenu(!showImportMenu)} className="action-secondary flex items-center gap-1.5">
-              <Upload size={16} />
-              导入
-              <ChevronDown size={14} className={`transition-transform ${showImportMenu ? "rotate-180" : ""}`} />
-            </button>
-            {showImportMenu && (
-              <div className="absolute right-0 top-full mt-1.5 z-40 w-64 rounded-2xl border border-border bg-white p-2 shadow-xl">
+          <div className="flex items-center gap-2">
+            <>
+              <button
+                onClick={handleExport}
+                disabled={exporting}
+                className="action-secondary flex items-center gap-1.5"
+              >
+                {exporting ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Download size={16} />
+                )}
+                导出
+              </button>
+              <div className="relative" ref={importMenuRef}>
                 <button
-                  onClick={() => { setShowImportMenu(false); setShowImport(true); }}
-                  className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm transition-all hover:bg-muted/60"
+                  onClick={() => setShowImportMenu(!showImportMenu)}
+                  className="action-secondary flex items-center gap-1.5"
                 >
-                  <Upload size={16} className="text-muted-foreground" />
-                  <div className="text-left">
-                    <div>导入渠道</div>
-                    <div className="text-xs text-muted-foreground">WaLiAPI 导出 / 扫描本地 / WaLiCode 备份</div>
-                  </div>
+                  <Upload size={16} />
+                  导入
+                  <ChevronDown
+                    size={14}
+                    className={`transition-transform ${showImportMenu ? "rotate-180" : ""}`}
+                  />
                 </button>
+                {showImportMenu && (
+                  <div className="absolute right-0 top-full mt-1.5 z-40 w-64 rounded-2xl border border-border bg-white p-2 shadow-xl">
+                    <button
+                      onClick={() => {
+                        setShowImportMenu(false);
+                        setShowImport(true);
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-sm transition-all hover:bg-muted/60"
+                    >
+                      <Upload size={16} className="text-muted-foreground" />
+                      <div className="text-left">
+                        <div>导入渠道</div>
+                        <div className="text-xs text-muted-foreground">
+                          WaLiAPI 导出 / 扫描本地 / WaLiCode 备份
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div></>
-          <button onClick={() => { setEditing(null); setDuplicating(false); setShowForm(true); }} className="action-primary">
-            <Plus size={16} /> 新建渠道
-          </button>
-        </div>
+            </>
+            <button
+              onClick={() => {
+                setEditing(null);
+                setDuplicating(false);
+                setShowForm(true);
+              }}
+              className="action-primary"
+            >
+              <Plus size={16} /> 新建渠道
+            </button>
+          </div>
         </div>
         <ChannelTabs />
       </div>
@@ -309,7 +412,10 @@ export function ChannelsPage() {
       {actionError && (
         <div className="flex items-center justify-between rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{actionError}</span>
-          <button onClick={() => setActionError(null)} className="ml-3 shrink-0 text-red-400 transition-colors hover:text-red-600">
+          <button
+            onClick={() => setActionError(null)}
+            className="ml-3 shrink-0 text-red-400 transition-colors hover:text-red-600"
+          >
             <X size={16} />
           </button>
         </div>
@@ -321,14 +427,23 @@ export function ChannelsPage() {
             <>
               <AlertCircle className="h-12 w-12 text-red-400/70" />
               <p className="text-base font-medium">数据加载失败</p>
-              <p className="text-sm text-muted-foreground">请检查服务是否已启动，或点击下方按钮重试</p>
-              <button onClick={() => load()} className="mt-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700">重新加载</button>
+              <p className="text-sm text-muted-foreground">
+                请检查服务是否已启动，或点击下方按钮重试
+              </p>
+              <button
+                onClick={() => load()}
+                className="mt-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-700"
+              >
+                重新加载
+              </button>
             </>
           ) : (
             <>
               <Radio className="h-12 w-12 text-muted-foreground/70" />
               <p className="text-base font-medium">还没有配置任何渠道</p>
-              <p className="text-sm text-muted-foreground">先添加一个上游服务商，即可开始分发请求</p>
+              <p className="text-sm text-muted-foreground">
+                先添加一个上游服务商，即可开始分发请求
+              </p>
             </>
           )}
         </div>
@@ -357,13 +472,17 @@ export function ChannelsPage() {
                 onDrop={(e) => handleDrop(e, ch.id)}
                 className={`group surface rounded-2xl p-4 transition-all ${
                   isDragging ? "opacity-40 scale-[0.98]" : ""
-                } ${
-                  isDragOver ? "ring-2 ring-blue-400 ring-offset-1" : ""
-                }`}
+                } ${isDragOver ? "ring-2 ring-blue-400 ring-offset-1" : ""}`}
               >
-                <div className="flex items-center gap-3 cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : ch.id)}>
+                <div
+                  className="flex items-center gap-3 cursor-pointer"
+                  onClick={() => setExpandedId(isExpanded ? null : ch.id)}
+                >
                   {/* 拖拽手柄 */}
-                  <div className="flex cursor-grab items-center text-slate-300 transition-colors hover:text-slate-400 active:cursor-grabbing" onClick={e => e.stopPropagation()}>
+                  <div
+                    className="flex cursor-grab items-center text-slate-300 transition-colors hover:text-slate-400 active:cursor-grabbing"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     <GripVertical size={18} />
                   </div>
 
@@ -373,12 +492,16 @@ export function ChannelsPage() {
                   </div>
 
                   {/* 状态点 */}
-                  <span className={`h-2 w-2 shrink-0 rounded-full ${ch.status === 1 ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-zinc-400"}`} />
+                  <span
+                    className={`h-2 w-2 shrink-0 rounded-full ${ch.status === 1 ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]" : "bg-zinc-400"}`}
+                  />
 
                   {/* 名称 + 双标签（[协议] [提供商]）+ 规范 Base URL */}
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <h3 className="truncate text-sm font-semibold tracking-tight">{ch.name}</h3>
+                      <h3 className="truncate text-sm font-semibold tracking-tight">
+                        {ch.name}
+                      </h3>
                       <span className="shrink-0 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
                         [{protocolLabel}]
                       </span>
@@ -386,7 +509,10 @@ export function ChannelsPage() {
                         [{providerLabel}]
                       </span>
                     </div>
-                    <div className="mt-0.5 truncate text-xs font-mono text-slate-400" title={displayBaseUrl}>
+                    <div
+                      className="mt-0.5 truncate text-xs font-mono text-slate-400"
+                      title={displayBaseUrl}
+                    >
                       {displayBaseUrl}
                     </div>
                   </div>
@@ -396,58 +522,154 @@ export function ChannelsPage() {
                     <div className="hidden items-center gap-3 lg:flex">
                       <div className="flex items-center gap-1 text-xs">
                         <Activity size={11} className="text-slate-400" />
-                        <span className="font-semibold tabular-nums text-slate-700">{formatNumber(stats.total_calls)}</span>
+                        <span className="font-semibold tabular-nums text-slate-700">
+                          {formatNumber(stats.total_calls)}
+                        </span>
                       </div>
                       <div className="flex items-center gap-1 text-xs">
                         <span className="text-slate-400">成功率</span>
-                        <span className="font-semibold tabular-nums" style={{ color: (stats.success_calls / stats.total_calls * 100) >= 95 ? "#10b981" : (stats.success_calls / stats.total_calls * 100) >= 80 ? "#f59e0b" : "#ef4444" }}>
-                          {(stats.success_calls / stats.total_calls * 100).toFixed(0)}%
+                        <span
+                          className="font-semibold tabular-nums"
+                          style={{
+                            color:
+                              (stats.success_calls / stats.total_calls) * 100 >=
+                              95
+                                ? "#10b981"
+                                : (stats.success_calls / stats.total_calls) *
+                                      100 >=
+                                    80
+                                  ? "#f59e0b"
+                                  : "#ef4444",
+                          }}
+                        >
+                          {(
+                            (stats.success_calls / stats.total_calls) *
+                            100
+                          ).toFixed(0)}
+                          %
                         </span>
                       </div>
                       <div className="flex items-center gap-1 text-xs">
                         <Clock size={11} className="text-slate-400" />
-                        <span className="font-semibold tabular-nums text-slate-700">{formatDuration(stats.avg_latency_ms)}</span>
+                        <span className="font-semibold tabular-nums text-slate-700">
+                          {formatDuration(stats.avg_latency_ms)}
+                        </span>
                       </div>
                     </div>
                   ) : null}
 
                   {/* 调度信息 */}
                   <div className="hidden items-center gap-2 text-xs text-slate-400 md:flex">
-                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5">P{ch.priority}</span>
-                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5">W{ch.weight}</span>
+                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5">
+                      P{ch.priority}
+                    </span>
+                    <span className="rounded-md bg-slate-100 px-1.5 py-0.5">
+                      W{ch.weight}
+                    </span>
                   </div>
 
                   {/* 操作按钮 */}
-                  <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => handleTest(ch.id)} disabled={testing === ch.id} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50" title="测试连接">
-                      {testing === ch.id ? <Loader2 size={15} className="animate-spin" /> : <Zap size={15} />}
+                  <div
+                    className="flex items-center gap-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={() => handleTest(ch.id)}
+                      disabled={testing === ch.id}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:opacity-50"
+                      title="测试连接"
+                    >
+                      {testing === ch.id ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : (
+                        <Zap size={15} />
+                      )}
                     </button>
-                    <button onClick={() => handleCopyCurl(ch)} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600" title="复制测试 curl 命令（含真实 API Key，粘贴到终端即可直接请求该渠道）">
-                      {copiedCurl === ch.id ? <Check size={15} className="text-emerald-500" /> : <Terminal size={15} />}
+                    <button
+                      onClick={() => handleCopyCurl(ch)}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      title="复制测试 curl 命令（含真实 API Key，粘贴到终端即可直接请求该渠道）"
+                    >
+                      {copiedCurl === ch.id ? (
+                        <Check size={15} className="text-emerald-500" />
+                      ) : (
+                        <Terminal size={15} />
+                      )}
                     </button>
-                    <button onClick={() => { setEditing(ch); setShowForm(true); }} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600" title="编辑">
+                    <button
+                      onClick={() => {
+                        setEditing(ch);
+                        setShowForm(true);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      title="编辑"
+                    >
                       <Edit size={15} />
                     </button>
-                    <button onClick={() => { setEditing(ch); setDuplicating(true); setShowForm(true); }} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600" title="复制">
+                    <button
+                      onClick={() => {
+                        setEditing(ch);
+                        setDuplicating(true);
+                        setShowForm(true);
+                      }}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      title="复制"
+                    >
                       <Copy size={15} />
                     </button>
-                    <button onClick={() => handleToggle(ch)} className="rounded-lg p-1.5 transition-colors hover:bg-slate-100" title={ch.status === 1 ? "禁用" : "启用"}>
-                      <Power size={15} className={ch.status === 1 ? "text-emerald-500" : "text-zinc-400"} />
+                    <button
+                      onClick={() => handleToggle(ch)}
+                      className="rounded-lg p-1.5 transition-colors hover:bg-slate-100"
+                      title={ch.status === 1 ? "禁用" : "启用"}
+                    >
+                      <Power
+                        size={15}
+                        className={
+                          ch.status === 1 ? "text-emerald-500" : "text-zinc-400"
+                        }
+                      />
                     </button>
-                    <button onClick={() => setDeleteTarget(ch)} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500" title="删除">
+                    <button
+                      onClick={() => setDeleteTarget(ch)}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500"
+                      title="删除"
+                    >
                       <Trash2 size={15} />
                     </button>
-                    <button onClick={() => setExpandedId(isExpanded ? null : ch.id)} className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600" title={isExpanded ? "收起" : "展开"}>
-                      <ChevronDown size={15} className={`transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+                    <button
+                      onClick={() => setExpandedId(isExpanded ? null : ch.id)}
+                      className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      title={isExpanded ? "收起" : "展开"}
+                    >
+                      <ChevronDown
+                        size={15}
+                        className={`transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                      />
                     </button>
                   </div>
                 </div>
 
                 {/* 测试结果行（紧凑） */}
                 {result && (
-                  <div className={`mt-2 flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs ${result.success ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-                    {result.success ? <><span className="text-emerald-500">✓</span> 连接成功</> : <><span className="text-red-500">✗</span> {result.message}</>}
-                    <span className={result.success ? "text-emerald-600" : "text-red-600"}>({result.latency_ms.toFixed(2)}ms)</span>
+                  <div
+                    className={`mt-2 flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs ${result.success ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}
+                  >
+                    {result.success ? (
+                      <>
+                        <span className="text-emerald-500">✓</span> 连接成功
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-red-500">✗</span> {result.message}
+                      </>
+                    )}
+                    <span
+                      className={
+                        result.success ? "text-emerald-600" : "text-red-600"
+                      }
+                    >
+                      ({result.latency_ms.toFixed(2)}ms)
+                    </span>
                   </div>
                 )}
 
@@ -456,9 +678,11 @@ export function ChannelsPage() {
                   <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
                     {/* 可用模型 */}
                     <div>
-                      <div className="mb-1.5 text-xs font-semibold text-slate-500">可用模型 ({ch.models.length})</div>
+                      <div className="mb-1.5 text-xs font-semibold text-slate-500">
+                        可用模型 ({ch.models.length})
+                      </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {ch.models.map(m => (
+                        {ch.models.map((m) => (
                           <button
                             key={m}
                             onClick={() => handleCopyModel(m)}
@@ -466,64 +690,101 @@ export function ChannelsPage() {
                             title="点击复制"
                           >
                             {m}
-                            {copiedModel === m && <Check size={9} className="text-emerald-500" />}
+                            {copiedModel === m && (
+                              <Check size={9} className="text-emerald-500" />
+                            )}
                           </button>
                         ))}
                       </div>
                     </div>
 
                     {/* 映射模型 */}
-                    {ch.model_mapping && Object.keys(ch.model_mapping).length > 0 && (
-                      <div>
-                        <div className="mb-1.5 text-xs font-semibold text-slate-500">映射模型</div>
-                        <div className="flex flex-wrap gap-1.5">
-                          {Object.entries(ch.model_mapping).flatMap(([name, target]) => {
-                            const targets = Array.isArray(target) ? target : [target];
-                            return targets.map(t => {
-                              const isOff = (ch.model_mapping_disabled ?? []).some(d => d[0] === name && d[1] === t);
-                              return (
-                                <div
-                                  key={`${name}→${t}`}
-                                  className={`inline-flex items-center gap-1 rounded-full py-0 pl-1.5 pr-1 text-[11px] font-medium leading-5 transition-all ${
-                                    isOff ? "bg-slate-100 text-slate-400" : "bg-violet-50 text-violet-700"
-                                  }`}
-                                >
-                                  <button
-                                    onClick={() => handleCopyModel(name)}
-                                    className={`transition-all active:scale-95 ${isOff ? "line-through decoration-slate-300" : "hover:text-violet-900"}`}
-                                    title="点击复制映射名"
-                                  >
-                                    {name} → {t}
-                                    {copiedModel === name && <Check size={9} className="ml-0.5 inline text-emerald-500" />}
-                                  </button>
-                                  <button
-                                    onClick={() => handleToggleMapping(ch, name, t, isOff)}
-                                    className={`rounded-full p-0.5 transition-colors ${
-                                      isOff ? "text-slate-400 hover:bg-slate-200 hover:text-emerald-600" : "text-violet-400 hover:bg-violet-100 hover:text-red-500"
-                                    }`}
-                                    title={isOff ? "已关闭，点击开启" : "已开启，点击关闭"}
-                                  >
-                                    <Power size={10} />
-                                  </button>
-                                </div>
-                              );
-                            });
-                          })}
+                    {ch.model_mapping &&
+                      Object.keys(ch.model_mapping).length > 0 && (
+                        <div>
+                          <div className="mb-1.5 text-xs font-semibold text-slate-500">
+                            映射模型
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {Object.entries(ch.model_mapping).flatMap(
+                              ([name, target]) => {
+                                const targets = Array.isArray(target)
+                                  ? target
+                                  : [target];
+                                return targets.map((t) => {
+                                  const isOff = (
+                                    ch.model_mapping_disabled ?? []
+                                  ).some((d) => d[0] === name && d[1] === t);
+                                  return (
+                                    <div
+                                      key={`${name}→${t}`}
+                                      className={`inline-flex items-center gap-1 rounded-full py-0 pl-1.5 pr-1 text-[11px] font-medium leading-5 transition-all ${
+                                        isOff
+                                          ? "bg-slate-100 text-slate-400"
+                                          : "bg-violet-50 text-violet-700"
+                                      }`}
+                                    >
+                                      <button
+                                        onClick={() => handleCopyModel(name)}
+                                        className={`transition-all active:scale-95 ${isOff ? "line-through decoration-slate-300" : "hover:text-violet-900"}`}
+                                        title="点击复制映射名"
+                                      >
+                                        {name} → {t}
+                                        {copiedModel === name && (
+                                          <Check
+                                            size={9}
+                                            className="ml-0.5 inline text-emerald-500"
+                                          />
+                                        )}
+                                      </button>
+                                      <button
+                                        onClick={() =>
+                                          handleToggleMapping(
+                                            ch,
+                                            name,
+                                            t,
+                                            isOff,
+                                          )
+                                        }
+                                        className={`rounded-full p-0.5 transition-colors ${
+                                          isOff
+                                            ? "text-slate-400 hover:bg-slate-200 hover:text-emerald-600"
+                                            : "text-violet-400 hover:bg-violet-100 hover:text-red-500"
+                                        }`}
+                                        title={
+                                          isOff
+                                            ? "已关闭，点击开启"
+                                            : "已开启，点击关闭"
+                                        }
+                                      >
+                                        <Power size={10} />
+                                      </button>
+                                    </div>
+                                  );
+                                });
+                              },
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
                     {/* API Key */}
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
-                        <span className="text-xs font-semibold text-slate-500">API Key</span>
+                        <span className="text-xs font-semibold text-slate-500">
+                          API Key
+                        </span>
                         <div className="flex items-center gap-1">
                           <button
                             onClick={() => handleCopyKey(ch)}
                             className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
                             title="复制"
                           >
-                            {copiedKey === ch.id ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                            {copiedKey === ch.id ? (
+                              <Check size={12} className="text-emerald-500" />
+                            ) : (
+                              <Copy size={12} />
+                            )}
                           </button>
                           <button
                             onClick={() => handleToggleKey(ch)}
@@ -531,14 +792,20 @@ export function ChannelsPage() {
                             className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
                             title={keyVisible ? "隐藏" : "显示"}
                           >
-                            {keyLoading === ch.id ? <Loader2 size={12} className="animate-spin" /> : keyVisible ? <EyeOff size={12} /> : <Eye size={12} />}
+                            {keyLoading === ch.id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : keyVisible ? (
+                              <EyeOff size={12} />
+                            ) : (
+                              <Eye size={12} />
+                            )}
                           </button>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600">
                         <span className="truncate">
                           {keyVisible
-                            ? (fullKeyMap[ch.id] || ch.api_key)
+                            ? fullKeyMap[ch.id] || ch.api_key
                             : `${ch.api_key.slice(0, 8)}${"•".repeat(12)}`}
                         </span>
                         {keyVisible && fullKeyMap[ch.id] && (
@@ -548,7 +815,9 @@ export function ChannelsPage() {
                         )}
                       </div>
                       {copiedKey === ch.id && (
-                        <div className="mt-1 text-[11px] text-emerald-600">✓ 已复制到剪贴板</div>
+                        <div className="mt-1 text-[11px] text-emerald-600">
+                          ✓ 已复制到剪贴板
+                        </div>
                       )}
                     </div>
 
@@ -556,7 +825,9 @@ export function ChannelsPage() {
                     {ch.extra_keys && ch.extra_keys.length > 0 && (
                       <div>
                         <div className="mb-1.5 flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-500">额外 Keys（负载均衡）</span>
+                          <span className="text-xs font-semibold text-slate-500">
+                            额外 Keys（负载均衡）
+                          </span>
                           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
                             {ch.extra_keys.length} 个
                           </span>
@@ -566,90 +837,185 @@ export function ChannelsPage() {
                             const ekVisible = extraKeyVisibleMap[ek.id];
                             const ekFull = extraKeyFullMap[ek.id];
                             return (
-                            <div key={ek.id} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600">
-                              <span className="shrink-0 text-slate-400">#{ekIdx + 2}</span>
-                              <span className="truncate">
-                                {ekVisible
-                                  ? (ekFull || ek.api_key)
-                                  : `${ek.api_key.slice(0, 8)}${"•".repeat(12)}`}
-                              </span>
-                              <button
-                                onClick={() => handleToggleExtraKey(ek.id)}
-                                disabled={extraKeyLoading === ek.id}
-                                className="shrink-0 rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 disabled:opacity-50"
-                                title={ekVisible ? "隐藏" : "显示"}
+                              <div
+                                key={ek.id}
+                                className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600"
                               >
-                                {extraKeyLoading === ek.id ? <Loader2 size={11} className="animate-spin" /> : ekVisible ? <EyeOff size={11} /> : <Eye size={11} />}
-                              </button>
-                              <span className="ml-auto shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">w:{ek.weight}</span>
-                              <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${ek.status === 1 ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}>
-                                {ek.status === 1 ? "启用" : "禁用"}
-                              </span>
-                            </div>
+                                <span className="shrink-0 text-slate-400">
+                                  #{ekIdx + 2}
+                                </span>
+                                <span className="truncate">
+                                  {ekVisible
+                                    ? ekFull || ek.api_key
+                                    : `${ek.api_key.slice(0, 8)}${"•".repeat(12)}`}
+                                </span>
+                                <button
+                                  onClick={() => handleToggleExtraKey(ek.id)}
+                                  disabled={extraKeyLoading === ek.id}
+                                  className="shrink-0 rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 disabled:opacity-50"
+                                  title={ekVisible ? "隐藏" : "显示"}
+                                >
+                                  {extraKeyLoading === ek.id ? (
+                                    <Loader2
+                                      size={11}
+                                      className="animate-spin"
+                                    />
+                                  ) : ekVisible ? (
+                                    <EyeOff size={11} />
+                                  ) : (
+                                    <Eye size={11} />
+                                  )}
+                                </button>
+                                <span className="ml-auto shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">
+                                  w:{ek.weight}
+                                </span>
+                                <span
+                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${ek.status === 1 ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}
+                                >
+                                  {ek.status === 1 ? "启用" : "禁用"}
+                                </span>
+                              </div>
                             );
                           })}
                         </div>
-                        <p className="mt-1 text-[11px] text-slate-400">主 Key + 额外 Keys 按权重负载均衡，失效 Key 自动降级</p>
+                        <p className="mt-1 text-[11px] text-slate-400">
+                          主 Key + 额外 Keys 按权重负载均衡，失效 Key 自动降级
+                        </p>
                       </div>
                     )}
 
                     {/* 详细统计仪表盘 */}
-                    {stats && stats.total_calls > 0 ? (() => {
-                      const successRate = (stats.success_calls / stats.total_calls * 100);
-                      const rateColor = successRate >= 95 ? "#10b981" : successRate >= 80 ? "#f59e0b" : "#ef4444";
-                      const latColor = stats.avg_latency_ms < 500 ? "#10b981" : stats.avg_latency_ms < 2000 ? "#f59e0b" : "#ef4444";
-                      const latPct = Math.min(stats.avg_latency_ms / 3000, 1) * 100;
-                      return (
-                        <div className="rounded-xl border border-slate-200/60 bg-gradient-to-br from-slate-50/80 to-white p-3">
-                          <div className="mb-2 flex items-center justify-between">
-                            <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
-                              <Activity size={12} /> 调用统计
-                            </span>
-                            {stats.last_call_at && (
-                              <span className="text-[11px] text-slate-400">最后调用 {formatTime(stats.last_call_at)}</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <div className="flex flex-col items-center gap-1">
-                              <div className="relative flex h-14 w-14 items-center justify-center">
-                                <svg className="h-14 w-14 -rotate-90" viewBox="0 0 70 70">
-                                  <circle cx="35" cy="35" r="28" fill="none" stroke="currentColor" strokeWidth="5" className="text-slate-200/60" />
-                                  <circle cx="35" cy="35" r="28" fill="none" stroke={rateColor} strokeWidth="5"
-                                    strokeLinecap="round" strokeDasharray={2 * Math.PI * 28}
-                                    strokeDashoffset={2 * Math.PI * 28 - (successRate / 100) * 2 * Math.PI * 28}
-                                    style={{ transition: "stroke-dashoffset 0.6s ease" }}
-                                  />
-                                </svg>
-                                <span className="absolute text-xs font-bold tabular-nums" style={{ color: rateColor }}>{successRate.toFixed(0)}%</span>
-                              </div>
-                              <span className="text-[10px] font-medium text-slate-400">成功率</span>
+                    {stats && stats.total_calls > 0 ? (
+                      (() => {
+                        const successRate =
+                          (stats.success_calls / stats.total_calls) * 100;
+                        const rateColor =
+                          successRate >= 95
+                            ? "#10b981"
+                            : successRate >= 80
+                              ? "#f59e0b"
+                              : "#ef4444";
+                        const latColor =
+                          stats.avg_latency_ms < 500
+                            ? "#10b981"
+                            : stats.avg_latency_ms < 2000
+                              ? "#f59e0b"
+                              : "#ef4444";
+                        const latPct =
+                          Math.min(stats.avg_latency_ms / 3000, 1) * 100;
+                        return (
+                          <div className="rounded-xl border border-slate-200/60 bg-gradient-to-br from-slate-50/80 to-white p-3">
+                            <div className="mb-2 flex items-center justify-between">
+                              <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                                <Activity size={12} /> 调用统计
+                              </span>
+                              {stats.last_call_at && (
+                                <span className="text-[11px] text-slate-400">
+                                  最后调用 {formatTime(stats.last_call_at)}
+                                </span>
+                              )}
                             </div>
-                            <div className="h-12 w-px bg-slate-200/70" />
-                            <div className="flex-1 grid grid-cols-3 gap-2">
-                              <div>
-                                <div className="text-[11px] text-slate-400">调用</div>
-                                <div className="text-base font-bold tabular-nums text-slate-800">{formatNumber(stats.total_calls)}</div>
-                                <div className="text-[10px] text-slate-400">成功 {formatNumber(stats.success_calls)} / 失败 {formatNumber(stats.failed_calls)}</div>
+                            <div className="flex items-center gap-4">
+                              <div className="flex flex-col items-center gap-1">
+                                <div className="relative flex h-14 w-14 items-center justify-center">
+                                  <svg
+                                    className="h-14 w-14 -rotate-90"
+                                    viewBox="0 0 70 70"
+                                  >
+                                    <circle
+                                      cx="35"
+                                      cy="35"
+                                      r="28"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="5"
+                                      className="text-slate-200/60"
+                                    />
+                                    <circle
+                                      cx="35"
+                                      cy="35"
+                                      r="28"
+                                      fill="none"
+                                      stroke={rateColor}
+                                      strokeWidth="5"
+                                      strokeLinecap="round"
+                                      strokeDasharray={2 * Math.PI * 28}
+                                      strokeDashoffset={
+                                        2 * Math.PI * 28 -
+                                        (successRate / 100) * 2 * Math.PI * 28
+                                      }
+                                      style={{
+                                        transition:
+                                          "stroke-dashoffset 0.6s ease",
+                                      }}
+                                    />
+                                  </svg>
+                                  <span
+                                    className="absolute text-xs font-bold tabular-nums"
+                                    style={{ color: rateColor }}
+                                  >
+                                    {successRate.toFixed(0)}%
+                                  </span>
+                                </div>
+                                <span className="text-[10px] font-medium text-slate-400">
+                                  成功率
+                                </span>
                               </div>
-                              <div>
-                                <div className="text-[11px] text-slate-400">Token</div>
-                                <div className="text-base font-bold tabular-nums text-slate-800">{formatNumber(stats.total_tokens)}</div>
-                                <div className="text-[10px] text-slate-400">↑{formatNumber(stats.prompt_tokens)} ↓{formatNumber(stats.completion_tokens)}</div>
-                              </div>
-                              <div>
-                                <div className="text-[11px] text-slate-400">延迟</div>
-                                <div className="mt-1 flex items-center gap-1.5">
-                                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200/60">
-                                    <div className="h-full rounded-full" style={{ width: `${latPct}%`, backgroundColor: latColor, transition: "width 0.6s ease" }} />
+                              <div className="h-12 w-px bg-slate-200/70" />
+                              <div className="flex-1 grid grid-cols-3 gap-2">
+                                <div>
+                                  <div className="text-[11px] text-slate-400">
+                                    调用
                                   </div>
-                                  <span className="text-xs font-semibold tabular-nums" style={{ color: latColor }}>{formatDuration(stats.avg_latency_ms)}</span>
+                                  <div className="text-base font-bold tabular-nums text-slate-800">
+                                    {formatNumber(stats.total_calls)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    成功 {formatNumber(stats.success_calls)} /
+                                    失败 {formatNumber(stats.failed_calls)}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-[11px] text-slate-400">
+                                    Token
+                                  </div>
+                                  <div className="text-base font-bold tabular-nums text-slate-800">
+                                    {formatNumber(stats.total_tokens)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    ↑{formatNumber(stats.prompt_tokens)} ↓
+                                    {formatNumber(stats.completion_tokens)}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-[11px] text-slate-400">
+                                    延迟
+                                  </div>
+                                  <div className="mt-1 flex items-center gap-1.5">
+                                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200/60">
+                                      <div
+                                        className="h-full rounded-full"
+                                        style={{
+                                          width: `${latPct}%`,
+                                          backgroundColor: latColor,
+                                          transition: "width 0.6s ease",
+                                        }}
+                                      />
+                                    </div>
+                                    <span
+                                      className="text-xs font-semibold tabular-nums"
+                                      style={{ color: latColor }}
+                                    >
+                                      {formatDuration(stats.avg_latency_ms)}
+                                    </span>
+                                  </div>
                                 </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })() : (
+                        );
+                      })()
+                    ) : (
                       <div className="rounded-xl border border-dashed border-slate-200 px-3 py-2 text-xs text-center text-slate-400">
                         暂无调用记录
                       </div>
@@ -661,11 +1027,21 @@ export function ChannelsPage() {
                         <span className="text-slate-400">健康探测:</span>
                         <span
                           className={`inline-block h-2 w-2 rounded-full ${ch.last_probe_ok ? "bg-emerald-500" : "bg-red-500"}`}
-                          title={ch.last_probe_ok ? "探测正常" : "探测失败（候选排序沉底）"}
+                          title={
+                            ch.last_probe_ok
+                              ? "探测正常"
+                              : "探测失败（候选排序沉底）"
+                          }
                         />
                         <span>{ch.last_probe_ok ? "正常" : "异常"}</span>
-                        {ch.probe_latency_ms !== null && <span className="text-slate-400">{ch.probe_latency_ms}ms</span>}
-                        {ch.last_probe_at && <span>{formatTime(ch.last_probe_at)}</span>}
+                        {ch.probe_latency_ms !== null && (
+                          <span className="text-slate-400">
+                            {ch.probe_latency_ms}ms
+                          </span>
+                        )}
+                        {ch.last_probe_at && (
+                          <span>{formatTime(ch.last_probe_at)}</span>
+                        )}
                       </div>
                     )}
                     {ch.last_test_at && (
@@ -673,7 +1049,9 @@ export function ChannelsPage() {
                         <span className="text-slate-400">最近测试:</span>
                         <span>{formatTime(ch.last_test_at)}</span>
                         {ch.last_test_ok !== null && (
-                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${ch.last_test_ok ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-xs font-medium ${ch.last_test_ok ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}
+                          >
                             {ch.last_test_ok ? "✓ 成功" : "✗ 失败"}
                           </span>
                         )}
@@ -691,8 +1069,17 @@ export function ChannelsPage() {
         <ChannelForm
           editing={editing}
           duplicate={duplicating}
-          onClose={() => { setShowForm(false); setEditing(null); setDuplicating(false); }}
-          onSaved={() => { setShowForm(false); setEditing(null); setDuplicating(false); load(); }}
+          onClose={() => {
+            setShowForm(false);
+            setEditing(null);
+            setDuplicating(false);
+          }}
+          onSaved={() => {
+            setShowForm(false);
+            setEditing(null);
+            setDuplicating(false);
+            load();
+          }}
         />
       )}
 
@@ -732,7 +1119,7 @@ function DeleteConfirmDialog({
     >
       <div
         className="surface w-full max-w-sm rounded-[28px] p-6"
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3">
           <div className="rounded-2xl border border-red-200 bg-red-50 p-2.5">
@@ -746,10 +1133,14 @@ function DeleteConfirmDialog({
         <div className="mt-4 rounded-2xl border border-border bg-background/50 px-4 py-3 text-sm">
           <div className="text-muted-foreground">渠道名称</div>
           <div className="mt-1 font-medium">{target.name}</div>
-          <div className="mt-2 text-xs font-mono text-muted-foreground truncate">{target.native_base_url || target.base_url}</div>
+          <div className="mt-2 text-xs font-mono text-muted-foreground truncate">
+            {target.native_base_url || target.base_url}
+          </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onClose} className="action-secondary">取消</button>
+          <button onClick={onClose} className="action-secondary">
+            取消
+          </button>
           <button
             onClick={onConfirm}
             disabled={deleting}
