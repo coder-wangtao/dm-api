@@ -4,3 +4,27 @@ Arc<AtomicBool> AtomicBool：可以被多个线程安全地读取、修改的布
 let running = AtomicBool::new(false); 表示：running = false
 running.store(true, Ordering::SeqCst); 相当于：把 running 从 false 改成 true
 这个修改是原子的。
+
+
+let mut dto: ChannelDto = c.into();
+把 c 这个 Channel 转换成 ChannelDto，然后赋值给 dto。
+例如假设有：
+struct Channel {
+    id: String,
+    name: String,
+}
+还有：
+struct ChannelDto {
+    id: String,
+    name: String,
+}
+你可以定义：
+impl From<Channel> for ChannelDto {
+    fn from(c: Channel) -> Self {
+        ChannelDto {
+            id: c.id,
+            name: c.name,
+        }
+    }
+}
+规定 Channel 可以转换成 ChannelDto。
