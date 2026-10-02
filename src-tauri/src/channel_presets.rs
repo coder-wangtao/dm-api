@@ -204,7 +204,7 @@ const SRC_DOUBAO: &str = "https://www.volcengine.com/docs/82379/";
 const SRC_MOONSHOT: &str = "https://platform.moonshot.ai/docs/api/chat";
 const SRC_ANTHROPIC: &str = "https://docs.anthropic.com/en/api/messages";
 
-/// 构建一个 preset 的便捷函数。
+/// 对下面这个函数，关掉 Clippy 的"参数太多"警告。
 #[allow(clippy::too_many_arguments)]
 fn preset(
     protocol: ChannelProtocol,
@@ -256,18 +256,27 @@ fn model(id: &str, verified_at: &str, source_url: &str) -> ModelSuggestion {
 /// custom option：不提供默认 URL、密钥或模型；协议决定其允许端点。
 fn custom_preset(protocol: ChannelProtocol) -> ChannelPreset {
     let (native_endpoints, default_checked, auth, strategy) = match protocol {
+        // 原生端点：OpenAI 支持 ChatCompletions（/v1/chat/completions）和 Responses 两种。
+        // 默认勾选：只勾选 ChatCompletions。
+        // 认证：Bearer，即请求头写 Authorization: Bearer <token>。
+        // 测试策略：ProbeFirstModel，即"探测第一个模型"来判断端点是否可用。
         ChannelProtocol::OpenAI => (
             vec![NativeEndpoint::ChatCompletions, NativeEndpoint::Responses],
             vec![NativeEndpoint::ChatCompletions],
-            AuthScheme::Bearer,
-            EndpointTestStrategy::ProbeFirstModel,
+            AuthScheme::Bearer, //请求头用 Authorization: Bearer
+            EndpointTestStrategy::ProbeFirstModel, 
         ),
+        // Anthropic（Claude）只有 Messages 端点。
+        // 认证用 XApiKey，即请求头 x-api-key: <token>（这是 Anthropic 特有的）。
+        // 其余同 OpenAI。
         ChannelProtocol::Anthropic => (
             vec![NativeEndpoint::Messages],
             vec![NativeEndpoint::Messages],
-            AuthScheme::XApiKey,
+            AuthScheme::XApiKey, 
             EndpointTestStrategy::ProbeFirstModel,
         ),
+        // Ollama 用 ApiChat 端点。
+        // 认证是 OptionalBearer：本地 Ollama 通常不需要 token，所以 Bearer 可选。
         ChannelProtocol::Ollama => (
             vec![NativeEndpoint::ApiChat],
             vec![NativeEndpoint::ApiChat],
@@ -441,8 +450,8 @@ fn openai_presets() -> Vec<ChannelPreset> {
             RegionGroup::Domestic,
             "Moonshot Kimi OpenAI 接口。",
             "moonshot",
-            "https://api.moonshot.ai/v1",
-            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.moonshot.cn/v1",
             "moonshot",
             vec![NativeEndpoint::ChatCompletions],
             vec![NativeEndpoint::ChatCompletions],

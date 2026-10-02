@@ -426,6 +426,16 @@ pub async fn test_channel_draft_impl(
 /// 拉取上游模型列表（T14）。返回模型 ID 数组 + 判定协议 + 根 URL，供编辑页
 /// 弹窗勾选后合并进模型列表。**绝不写库**：不创建/更新渠道、不写 request log、
 /// 不覆盖已有模型列表。API Key 复用草稿测试的解析语义（编辑留空回填已存 Key）。
+/// 
+/// {
+///  "models": [
+//     "kimi-k2.7-code",
+//     "kimi-k2.6"
+//   ],
+//  "protocol": "openai",
+//  "base_url": "https://api.moonshot.cn/v1"
+/// }
+
 #[tauri::command]
 pub async fn sync_upstream_models(
     input: DraftChannelTestInput,

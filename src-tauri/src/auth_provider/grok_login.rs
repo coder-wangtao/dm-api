@@ -34,12 +34,14 @@ pub const GROK_DEFAULT_POLL_INTERVAL: u64 = 5;
 pub const GROK_TOKEN_AUTH_HEADER: &str = "x-xai-token-auth";
 pub const GROK_TOKEN_AUTH_VALUE: &str = "xai-grok-cli";
 pub const GROK_CLIENT_VERSION_HEADER: &str = "x-grok-client-version";
-pub const GROK_CLIENT_VERSION: &str = "0.2.120";
+/// Pinned to the current stable Grok CLI (`https://x.ai/cli/stable`).
+/// `cli-chat-proxy.grok.com` rejects older pins such as `0.2.120`.
+pub const GROK_CLIENT_VERSION: &str = "1.0.46";
 pub const GROK_CLIENT_IDENTIFIER_HEADER: &str = "x-grok-client-identifier";
 pub const GROK_CLIENT_IDENTIFIER: &str = "grok-shell";
 pub const GROK_AUTHENTICATE_RESPONSE_HEADER: &str = "x-authenticateresponse";
 pub const GROK_AUTHENTICATE_RESPONSE_VALUE: &str = "authenticate-response";
-pub const GROK_USER_AGENT: &str = "xai-grok-workspace/0.2.120";
+pub const GROK_USER_AGENT: &str = "xai-grok-workspace/1.0.46";
 
 /// Server-side device authorization response (RFC 8628 §3.2).
 #[derive(Deserialize)]
@@ -127,6 +129,9 @@ pub struct GrokLogin {
     /// When true, discovered and stored token endpoints must be HTTPS on x.ai.
     /// Test constructors that point at loopback mocks set this to false.
     strict_endpoints: bool,
+    /// Production clients read the global outbound proxy on each request.
+    /// Test constructors stay direct so loopback mocks are not sent through a proxy.
+    follow_global_proxy: bool,
     /// Optional floor (seconds) used by tests so polling does not wait 5s.
     min_poll_interval: Option<u64>,
 }
@@ -149,6 +154,7 @@ impl GrokLogin {
             device_auth_url: String::new(),
             token_url: String::new(),
             strict_endpoints: true,
+            follow_global_proxy: true,
             min_poll_interval: None,
         }
     }
@@ -168,6 +174,7 @@ impl GrokLogin {
             device_auth_url: device_auth_url.into(),
             token_url: token_url.into(),
             strict_endpoints: false,
+            follow_global_proxy: false,
             min_poll_interval: Some(1),
         }
     }
@@ -183,8 +190,26 @@ impl GrokLogin {
             device_auth_url: String::new(),
             token_url: String::new(),
             strict_endpoints: true,
+            follow_global_proxy: false,
             min_poll_interval: Some(1),
         }
+    }
+
+    /// HTTP client for one OAuth call. Production uses the in-app outbound proxy,
+    /// or the macOS system HTTPS proxy when that setting is off.
+    fn http(&self) -> reqwest::Client {
+        if !self.follow_global_proxy {
+            return self.client.clone();
+        }
+        let proxy = crate::adaptor::grok_outbound_proxy_url();
+        crate::adaptor::with_proxy(
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(GROK_HTTP_TIMEOUT),
+            proxy.as_deref(),
+        )
+        .build()
+        .unwrap_or_else(|_| self.client.clone())
     }
 
     fn oauth_headers() -> HeaderMap {
@@ -251,7 +276,7 @@ impl GrokLogin {
             return Err(ProviderError::DeviceAuthorizationFailed);
         }
         let response = self
-            .client
+            .http()
             .get(&self.discovery_url)
             .header(ACCEPT, "application/json")
             .send()
@@ -342,7 +367,7 @@ impl GrokLogin {
         }
         runtime.set_step(LoginStep::Authorizing).await;
         let response = self
-            .client
+            .http()
             .post(device_auth_url)
             .headers(Self::oauth_headers())
             .form(&[("client_id", GROK_CLIENT_ID), ("scope", GROK_SCOPE)])
@@ -382,7 +407,7 @@ impl GrokLogin {
             }
             runtime.set_step(LoginStep::Waiting).await;
             let response = match self
-                .client
+                .http()
                 .post(token_url)
                 .headers(Self::oauth_headers())
                 .form(&[
@@ -606,7 +631,7 @@ impl GrokLogin {
         token_endpoint: &str,
     ) -> Result<OAuthTokens, RefreshError> {
         let response = self
-            .client
+            .http()
             .post(token_endpoint)
             .headers(Self::oauth_headers())
             .form(&[

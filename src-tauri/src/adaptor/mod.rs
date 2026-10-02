@@ -42,6 +42,88 @@ pub fn global_proxy_url() -> Option<String> {
         .clone()
 }
 
+/// Grok 访问 `auth.x.ai` 时使用的代理：应用内出站代理优先，未开启时回退到系统 HTTPS 代理。
+pub fn grok_outbound_proxy_url() -> Option<String> {
+    global_proxy_url().or_else(system_https_proxy_url)
+}
+
+fn system_https_proxy_url() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        cached_macos_https_proxy()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cached_macos_https_proxy() -> Option<String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct Cache {
+        at: Instant,
+        url: Option<String>,
+    }
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cache) = guard.as_ref() {
+        if cache.at.elapsed() < Duration::from_secs(2) {
+            return cache.url.clone();
+        }
+    }
+    let url = macos_https_proxy_now();
+    *guard = Some(Cache {
+        at: Instant::now(),
+        url: url.clone(),
+    });
+    url
+}
+
+#[cfg(target_os = "macos")]
+fn macos_https_proxy_now() -> Option<String> {
+    let output = std::process::Command::new("scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_macos_proxy_settings(&text)
+}
+
+/// 从 `scutil --proxy` 文本取出 HTTPS（否则 HTTP）代理，格式 `http://host:port`。
+fn parse_macos_proxy_settings(text: &str) -> Option<String> {
+    let mut values = std::collections::HashMap::<String, String>::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        values.insert(key.trim().to_string(), value.trim().to_string());
+    }
+    let https = values.get("HTTPSEnable").map(|v| v == "1").unwrap_or(false);
+    let http = values.get("HTTPEnable").map(|v| v == "1").unwrap_or(false);
+    let (host_key, port_key) = if https {
+        ("HTTPSProxy", "HTTPSPort")
+    } else if http {
+        ("HTTPProxy", "HTTPPort")
+    } else {
+        return None;
+    };
+    let host = values.get(host_key)?.trim();
+    let port = values.get(port_key)?.trim();
+    if host.is_empty() || port.is_empty() || port == "0" {
+        return None;
+    }
+    if host.contains(':') {
+        return None;
+    }
+    Some(format!("http://{host}:{port}"))
+}
+
 fn streaming_client_map() -> &'static Mutex<HashMap<String, reqwest::Client>> {
     STREAMING_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -214,6 +296,28 @@ mod client_reuse_tests {
             .unwrap_or_else(|e| e.into_inner());
         assert!(map.contains_key(&direct_key));
         assert!(map.contains_key(&proxied_key));
+    }
+
+    #[test]
+    fn macos_proxy_settings_prefer_https() {
+        let text = r#"
+        HTTPEnable : 1
+        HTTPPort : 80
+        HTTPProxy : 127.0.0.1
+        HTTPSEnable : 1
+        HTTPSPort : 51926
+        HTTPSProxy : 127.0.0.1
+        "#;
+        assert_eq!(
+            parse_macos_proxy_settings(text).as_deref(),
+            Some("http://127.0.0.1:51926")
+        );
+    }
+
+    #[test]
+    fn macos_proxy_settings_skip_when_disabled() {
+        let text = "HTTPSEnable : 0\nHTTPEnable : 0\n";
+        assert!(parse_macos_proxy_settings(text).is_none());
     }
 
     /// ProxySetting.resolve 语义：direct → None；custom → URL；global/缺省 → 全局。

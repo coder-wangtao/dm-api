@@ -42,6 +42,8 @@ fn safe_headers() -> Vec<HeaderName> {
 
 pub struct GrokProvider {
     client: reqwest::Client,
+    /// Production requests use the current global outbound proxy.
+    follow_global_proxy: bool,
     api_base: String,
     login: GrokLogin,
 }
@@ -70,7 +72,8 @@ impl GrokProvider {
     ) -> Self {
         let device_auth_url = device_auth_url.into();
         let token_url = token_url.into();
-        let login = if device_auth_url.is_empty() {
+        let follow_global_proxy = device_auth_url.is_empty();
+        let login = if follow_global_proxy {
             GrokLogin::new()
         } else {
             GrokLogin::with_endpoints(device_auth_url, token_url)
@@ -80,9 +83,27 @@ impl GrokProvider {
                 .timeout(GROK_HTTP_TIMEOUT)
                 .build()
                 .expect("grok provider http client"),
+            follow_global_proxy,
             api_base: api_base.into().trim_end_matches('/').to_owned(),
             login,
         }
+    }
+
+    /// Chat-proxy client. Production uses the in-app outbound proxy, or the
+    /// macOS system HTTPS proxy when that setting is off.
+    fn http(&self) -> reqwest::Client {
+        if !self.follow_global_proxy {
+            return self.client.clone();
+        }
+        let proxy = crate::adaptor::grok_outbound_proxy_url();
+        crate::adaptor::with_proxy(
+            reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(GROK_HTTP_TIMEOUT),
+            proxy.as_deref(),
+        )
+        .build()
+        .unwrap_or_else(|_| self.client.clone())
     }
 
     fn access_token(payload: &ProviderPayload) -> Result<String, ProviderError> {
@@ -245,7 +266,7 @@ impl Provider for GrokProvider {
         let mut headers = Self::identity_headers(&access_token, request.is_stream)?;
         Self::merge_safe_headers(&mut headers, request.headers);
         let body = Self::normalize_responses_body(request.body);
-        self.client
+        self.http()
             .post(format!("{}/{RESPONSES_PATH}", self.api_base))
             .headers(headers)
             .json(&body)
@@ -263,7 +284,7 @@ impl Provider for GrokProvider {
         let mut headers = Self::identity_headers(&access_token, false)?;
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         let response = self
-            .client
+            .http()
             .get(format!("{}/{MODELS_PATH}", self.api_base))
             .headers(headers)
             .send()

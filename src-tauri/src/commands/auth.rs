@@ -392,7 +392,8 @@ impl LoginSessions {
                 session.status.state = "failed".into();
                 session.status.step = None;
                 session.status.error_code = Some(login_error_code(&error).into());
-                session.status.error = Some(login_error_message(&error));
+                session.status.error =
+                    Some(login_error_message_for(&session.status.provider, &error));
             }
         }
     }
@@ -423,6 +424,19 @@ fn login_error_code(error: &ProviderError) -> &'static str {
 }
 
 fn login_error_message(error: &ProviderError) -> String {
+    login_error_message_for("", error)
+}
+
+fn login_error_message_for(provider: &str, error: &ProviderError) -> String {
+    if provider == "grok"
+        && matches!(
+            error,
+            ProviderError::Retryable | ProviderError::DeviceAuthorizationFailed
+        )
+    {
+        return "无法连接 Grok 授权服务（auth.x.ai）。请先在「设置 → 出站代理」开启可访问境外网络的代理，然后重试。"
+            .to_owned();
+    }
     match error {
         ProviderError::ValidationRequired { url } if url.starts_with("https://") => {
             format!("Google 账号需要先完成验证才能使用 Code Assist。请打开：{url}")
