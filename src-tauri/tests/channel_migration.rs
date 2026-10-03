@@ -100,30 +100,6 @@ fn legacy_schema_migrations() -> Vec<&'static str> {
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/migrations/008_knowledge_base.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/009_add_mcp_enabled.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/010_kb_upgrade.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/011_chunk_symbol_metadata.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/012_fts5_hybrid_search.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/013_add_embedding_batch_size.sql"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
             "/migrations/014_add_channel_timeout.sql"
         )),
     ]
