@@ -262,10 +262,12 @@ impl StreamDecoder for ChatToResponsesStreamDecoder {
 /// defensive code: a standard Anthropic upstream never emits this OpenAI-specific
 /// event, and `MessagesSseState` rejects it before the Messages leg could forward
 /// it here.
+#[allow(dead_code)]
 pub struct MessagesResponsesStreamDecoder {
     messages: Box<dyn StreamDecoder + Send + Sync>,
     chat: ChatToResponsesStreamDecoder,
 }
+#[allow(dead_code)]
 impl MessagesResponsesStreamDecoder {
     pub fn boxed(context: &ConversionContext) -> Box<dyn StreamDecoder + Send + Sync> {
         Box::new(Self {

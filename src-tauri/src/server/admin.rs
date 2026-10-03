@@ -11,15 +11,8 @@
 
 use std::sync::Arc;
 
-use axum::{
-    body::Body,
-    extract::State,
-    http::{header, HeaderMap, Request, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
-
-use super::router::SharedState;
+#[cfg(test)]
+use axum::http::{header, HeaderMap};
 
 /// token 建议最小长度（README / compose / systemd 示例均要求 ≥32 字符）。
 pub const MIN_TOKEN_LEN: usize = 32;
@@ -129,6 +122,7 @@ pub fn is_loopback_host(host: &str) -> bool {
 
 /// 恒定时间比较：比较耗时只与两串较长者的长度相关，不随匹配位置提前返回，
 /// 防止按字节探测 token 前缀的时序攻击。
+#[cfg(test)]
 pub(crate) fn token_matches(candidate: &str, expected: &str) -> bool {
     let candidate = candidate.as_bytes();
     let expected = expected.as_bytes();
@@ -141,6 +135,7 @@ pub(crate) fn token_matches(candidate: &str, expected: &str) -> bool {
     different == 0
 }
 
+#[cfg(test)]
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
     headers
         .get(header::AUTHORIZATION)
@@ -148,63 +143,6 @@ fn authorized(headers: &HeaderMap, expected: &str) -> bool {
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(|candidate| token_matches(candidate, expected))
         .unwrap_or(false)
-}
-
-/// KB/Wiki 管理接受 ADMIN token；普通 API Key 仅可进入授权的 RAG 查询路由。
-pub async fn require_admin(
-    State(shared): State<SharedState>,
-    headers: HeaderMap,
-    request: Request<Body>,
-    next: Next,
-) -> Response {
-    if shared
-        .admin_token
-        .as_deref()
-        .is_some_and(|token| authorized(&headers, token))
-    {
-        next.run(request).await
-    } else {
-        super::knowledge_access::require_read_access(shared, request, next).await
-    }
-}
-
-/// MCP 端点守卫：兼容 MCP token，API Key 仅提供无会话查询工具。
-/// 独立于管理员 token，避免 MCP 客户端获得渠道/密钥/设置管理权限。
-pub async fn require_mcp(
-    State(shared): State<SharedState>,
-    headers: HeaderMap,
-    request: Request<Body>,
-    next: Next,
-) -> Response {
-    if shared
-        .mcp_token
-        .as_deref()
-        .is_some_and(|token| authorized(&headers, token))
-    {
-        return next.run(request).await;
-    }
-    let access = match super::knowledge_access::authenticate(&shared, &headers).await {
-        Ok(access) => access,
-        Err(error) => return error.into_response(),
-    };
-    // API Key 使用无会话的 HTTP POST，不能进入旧版共享 SSE 会话。
-    if request.method() != axum::http::Method::POST {
-        return (
-            StatusCode::METHOD_NOT_ALLOWED,
-            "API Key MCP access uses stateless HTTP POST /mcp",
-        )
-            .into_response();
-    }
-    if !matches!(request.uri().path(), "/mcp" | "/mcp/") || request.uri().query().is_some() {
-        return (
-            StatusCode::FORBIDDEN,
-            "API Key cannot access legacy MCP sessions",
-        )
-            .into_response();
-    }
-    let mut request = request;
-    request.extensions_mut().insert(access);
-    next.run(request).await
 }
 
 #[cfg(test)]

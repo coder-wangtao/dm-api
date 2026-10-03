@@ -65,32 +65,14 @@ fn mock_state_handle(state: &Arc<AppState>) -> tauri::State<'static, Arc<AppStat
     handle.state::<Arc<AppState>>()
 }
 
-fn build_router(state: Arc<AppState>, shared: SharedState) -> Router {
+fn build_router(_state: Arc<AppState>, shared: SharedState) -> Router {
     // 宽松 CORS 仅作用于数据面 /v1/* 与 /health（API Key 鉴权，供浏览器/跨域客户端调用）；
-    // KB/Wiki/MCP 服务路由带凭据与权限校验，不附带宽松 CORS（防止任意网页跨域读取知识资产）；
     // /admin/api 与静态资源不附带 CORS 头（仅同源可用，配合 CSRF 中间件）。
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any)
         .expose_headers(Any);
-
-    // Service registry — 服务路由按鉴权域分组装配：
-    // 保留管理 token；普通 API Key 通过白名单查询已授权知识库。
-    let registry = crate::services::ServiceRegistry::new();
-    let kb_wiki_router = registry
-        .merge_routes_for(&["knowledge", "wiki"], state.clone())
-        .layer(middleware::from_fn_with_state(
-            shared.clone(),
-            super::admin::require_admin,
-        ));
-    let mcp_router =
-        registry
-            .merge_routes_for(&["mcp"], state.clone())
-            .layer(middleware::from_fn_with_state(
-                shared.clone(),
-                super::admin::require_mcp,
-            ));
 
     // Web 管理面板（/admin/api/*，自带会话鉴权 + CSRF 防护）
     let admin = super::admin_routes::router(shared.clone());
@@ -136,7 +118,7 @@ fn build_router(state: Arc<AppState>, shared: SharedState) -> Router {
         // 统一解析（X-Request-Id > Wali-Trace-Id > 生成 UUIDv4）、回写请求头、响应头回显。
         .layer(middleware::from_fn(super::request_id::middleware));
 
-    let gateway_router = data_plane_router.merge(kb_wiki_router).merge(mcp_router);
+    let gateway_router = data_plane_router;
 
     Router::new()
         .merge(gateway_router)
@@ -224,123 +206,6 @@ mod tests {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
         builder.body(Body::empty()).unwrap()
-    }
-
-    pub(super) fn json_request(
-        method: &str,
-        uri: &str,
-        bearer: Option<&str>,
-        body: &str,
-    ) -> Request<Body> {
-        let mut builder = Request::builder()
-            .method(method)
-            .uri(uri)
-            .header("content-type", "application/json");
-        if let Some(token) = bearer {
-            builder = builder.header("authorization", format!("Bearer {token}"));
-        }
-        builder.body(Body::from(body.to_string())).unwrap()
-    }
-
-    #[tokio::test]
-    async fn kb_and_wiki_rest_require_admin_token() {
-        let state = test_state().await;
-        let shared = test_shared(&state, Some(ADMIN_TOKEN), Some(MCP_TOKEN));
-        let app = build_router(state.clone(), shared);
-
-        // 无 token → 401
-        let res = app
-            .clone()
-            .oneshot(request("GET", "/api/kb", None))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-
-        // MCP token 与管理员 token 是独立凭证域：MCP token 打不开 KB
-        let res = app
-            .clone()
-            .oneshot(request("GET", "/api/kb", Some(MCP_TOKEN)))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-
-        // 正确管理员 token → 200（空库列表）
-        let res = app
-            .clone()
-            .oneshot(request("GET", "/api/kb", Some(ADMIN_TOKEN)))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-
-        // Wiki 端点同样要求管理员 token
-        let res = app
-            .clone()
-            .oneshot(request("GET", "/api/wiki/projects", None))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        let res = app
-            .clone()
-            .oneshot(request("GET", "/api/wiki/projects", Some(ADMIN_TOKEN)))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn mcp_endpoint_requires_mcp_token() {
-        let state = test_state().await;
-        let shared = test_shared(&state, Some(ADMIN_TOKEN), Some(MCP_TOKEN));
-        let app = build_router(state.clone(), shared);
-
-        let initialize = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0.0.1"}}}"#;
-
-        // 无 token / 错误 token → 401
-        let res = app
-            .clone()
-            .oneshot(json_request("POST", "/mcp", None, initialize))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        let res = app
-            .clone()
-            .oneshot(json_request("POST", "/mcp", Some(ADMIN_TOKEN), initialize))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-
-        // 正确 MCP token → 通过鉴权并进入 JSON-RPC 分发（initialize 成功）
-        let res = app
-            .clone()
-            .oneshot(json_request("POST", "/mcp", Some(MCP_TOKEN), initialize))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn service_endpoints_fail_closed_without_configured_tokens() {
-        let state = test_state().await;
-        // 两个 token 都未配置（桌面默认形态）：端点关闭，一律 401，绝不无鉴权放行
-        let shared = test_shared(&state, None, None);
-        let app = build_router(state.clone(), shared);
-
-        for (method, uri) in [
-            ("GET", "/api/kb"),
-            ("GET", "/api/wiki/projects"),
-            ("POST", "/mcp"),
-        ] {
-            let res = app
-                .clone()
-                .oneshot(request(method, uri, None))
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {uri}");
-        }
-
-        // 数据面 /health 不受服务 token 影响
-        let res = app.oneshot(request("GET", "/health", None)).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
     }
 
     // ─── C-03 第二档：Responses 续传回放端点 ─────────────────────────────
@@ -791,19 +656,12 @@ mod tests {
             Some("*")
         );
 
-        // 服务路由：不再挂宽松 CORS（KB 预检被鉴权拦截，响应无 CORS 头）
-        let res = app.clone().oneshot(preflight("/api/kb")).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        assert!(res.headers().get("access-control-allow-origin").is_none());
-
-        // 带 token 的实际跨域请求可以成功，但响应无 CORS 头 → 浏览器跨域读取不可行
-        let mut req = request("GET", "/api/kb", Some(ADMIN_TOKEN));
-        req.headers_mut().insert(
-            axum::http::header::ORIGIN,
-            "https://evil.example".parse().unwrap(),
-        );
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
+        // 管理面不挂宽松 CORS
+        let res = app
+            .clone()
+            .oneshot(preflight("/admin/api/auth/login"))
+            .await
+            .unwrap();
         assert!(res.headers().get("access-control-allow-origin").is_none());
     }
 
@@ -967,7 +825,3 @@ mod tests {
         assert!(res.headers().get("Retry-After").is_some());
     }
 }
-
-#[cfg(test)]
-#[path = "knowledge_access_tests.rs"]
-mod knowledge_access_tests;

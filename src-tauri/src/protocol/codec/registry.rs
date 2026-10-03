@@ -224,6 +224,7 @@ impl CodecRegistry {
         })
     }
 
+    #[allow(dead_code)] // 单测入口；正式路由走 prepare_pair
     pub fn chat_to_messages(
         model: &str,
         request: &Value,
@@ -231,6 +232,7 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Chat, Protocol::Messages, model, request)
     }
 
+    #[allow(dead_code)]
     pub fn messages_to_chat(
         model: &str,
         request: &Value,
@@ -238,6 +240,7 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Messages, Protocol::Chat, model, request)
     }
 
+    #[allow(dead_code)]
     pub fn chat_to_responses(
         model: &str,
         request: &Value,
@@ -245,6 +248,7 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Chat, Protocol::Responses, model, request)
     }
 
+    #[allow(dead_code)]
     pub fn messages_to_responses(
         model: &str,
         request: &Value,
@@ -252,6 +256,7 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Messages, Protocol::Responses, model, request)
     }
 
+    #[allow(dead_code)]
     pub fn responses_to_messages(
         model: &str,
         request: &Value,

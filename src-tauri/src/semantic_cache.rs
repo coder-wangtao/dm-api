@@ -171,7 +171,7 @@ pub async fn lookup(
         .map(|l| l.to_string())
         .unwrap_or(normalized);
     let embeddings =
-        crate::services::knowledge::embedder::embed(&[query_text], &embedding_model, &repo)
+        crate::embedding::embed(&[query_text], &embedding_model, &repo)
             .await
             .ok()?;
     let query_vec = embeddings.into_iter().next()?;
@@ -252,7 +252,7 @@ pub async fn store(
             .map(|l| l.to_string())
             .unwrap_or(normalized);
         if let Ok(vectors) =
-            crate::services::knowledge::embedder::embed(&[query_text], &embedding_model, &repo)
+            crate::embedding::embed(&[query_text], &embedding_model, &repo)
                 .await
         {
             if let Some(vector) = vectors.into_iter().next() {

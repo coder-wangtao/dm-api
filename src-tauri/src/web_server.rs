@@ -114,10 +114,6 @@ pub async fn run(cfg: WebServerConfig) -> Result<(), String> {
         data_dir,
     });
 
-    // Prompt 模板种子（C-07）：空表时写入源码字面量 v1——升级后行为逐字节不变
-    if let Err(error) = crate::prompt_templates::seed_if_empty(&state.db.pool).await {
-        tracing::warn!("[模板] 种子写入失败（运行时回退编译期默认）: {error}");
-    }
     crate::audit_log::apply_settings(&state.settings);
     // 全局出站代理（VPN 固定端口）：启动时从设置加载。
     {
@@ -126,12 +122,6 @@ pub async fn run(cfg: WebServerConfig) -> Result<(), String> {
         crate::adaptor::set_global_proxy(enabled.then_some(url));
     }
     tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
-        state.db.pool.clone(),
-        state.settings.clone(),
-    ));
-
-    // OTLP 导出（默认关闭，开启后按 seq 游标增量导出 request_log）
-    tauri::async_runtime::spawn(crate::otlp_exporter::run_export_loop(
         state.db.pool.clone(),
         state.settings.clone(),
     ));

@@ -405,6 +405,7 @@ impl ProxySetting {
     }
 }
 
+/// 渠道配置——从数据库 Channel 转换而来
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelConfig {
     pub base_url: String,
@@ -459,15 +460,16 @@ pub trait Adaptor: Send + Sync {
     fn default_models(&self) -> Vec<&'static str>;
     #[allow(dead_code)]
     fn default_base_url(&self) -> &str;
-
+    /// 测试渠道连通性
     async fn test(&self, config: &ChannelConfig) -> Result<TestResult, anyhow::Error>;
-
+    /// 非流式转发：返回 (状态码, 响应体, Token用量)
     async fn forward(
         &self,
         request: &ProxyRequest,
         config: &ChannelConfig,
     ) -> Result<(u16, serde_json::Value, Option<TokenUsage>), anyhow::Error>;
 
+    // 流式转发：直接返回 reqwest::Response，由调用方逐字节转发 SSE
     async fn forward_stream(
         &self,
         request: &ProxyRequest,

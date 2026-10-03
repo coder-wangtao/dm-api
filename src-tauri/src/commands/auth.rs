@@ -681,6 +681,7 @@ fn refuse_device_code_login(kind: &ProviderKind) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 /// Validate and normalize a Codex OAuth loopback callback URL.
 ///
 /// Only `localhost`/`127.0.0.1`/`::1` hosts on ports `1455`/`1457` with the exact

@@ -8,9 +8,8 @@ pub mod commands;
 pub mod core;
 pub mod db;
 mod endpoint_executor;
+pub mod embedding;
 pub mod health_probe;
-mod otlp_exporter;
-pub mod prompt_templates;
 mod protocol;
 #[cfg(test)]
 mod rollout_integration_tests;
@@ -238,10 +237,6 @@ pub fn run() {
                 });
                 app_handle.manage(state.clone());
 
-                // Prompt 模板种子（C-07）：空表时写入源码字面量 v1——升级后行为逐字节不变
-                if let Err(error) = crate::prompt_templates::seed_if_empty(&state.db.pool).await {
-                    tracing::warn!("[模板] 种子写入失败（运行时回退编译期默认）: {error}");
-                }
                 crate::audit_log::apply_settings(&state.settings);
                 // 全局出站代理（VPN 固定端口）：启动时从设置加载。
                 {
@@ -250,12 +245,6 @@ pub fn run() {
                     crate::adaptor::set_global_proxy(enabled.then_some(url));
                 }
                 tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
-                    state.db.pool.clone(),
-                    state.settings.clone(),
-                ));
-
-                // OTLP 导出（默认关闭，开启后按 seq 游标增量导出 request_log）
-                tauri::async_runtime::spawn(crate::otlp_exporter::run_export_loop(
                     state.db.pool.clone(),
                     state.settings.clone(),
                 ));
@@ -308,9 +297,6 @@ pub fn run() {
             commands::channel::toggle_channel_extra_key,
             commands::channel::delete_channel_extra_key,
             commands::api_key::get_api_keys,
-            commands::api_key::get_api_key_knowledge_access,
-            commands::api_key::set_api_key_knowledge_access,
-            commands::api_key::test_api_key_knowledge_access,
             commands::api_key::get_api_key_full,
             commands::api_key::create_api_key,
             commands::api_key::update_api_key,
@@ -344,9 +330,6 @@ pub fn run() {
             commands::log::delete_logs_before,
             commands::log::delete_all_logs,
             commands::log::get_log_stats,
-            commands::prompt_template::list_prompt_templates,
-            commands::prompt_template::create_prompt_template,
-            commands::prompt_template::activate_prompt_template,
             commands::log_repair::repair_stream_cancel_logs,
             commands::stats::get_dashboard_stats,
             commands::stats::get_model_stats,
@@ -375,48 +358,6 @@ pub fn run() {
             commands::import_export::import_scanned_sources,
             commands::import_export::pick_import_file,
             commands::import_export::save_export_file,
-            // Knowledge Base
-            commands::knowledge_base::get_knowledge_bases,
-            commands::knowledge_base::create_knowledge_base,
-            commands::knowledge_base::update_knowledge_base,
-            commands::knowledge_base::delete_knowledge_base,
-            commands::knowledge_base::get_kb_documents,
-            commands::knowledge_base::delete_kb_document,
-            commands::knowledge_base::reindex_kb_document,
-            commands::knowledge_base::search_knowledge_base,
-            commands::knowledge_base::ask_knowledge_base,
-            commands::knowledge_base::get_kb_stats,
-            commands::knowledge_base::upload_kb_document,
-            commands::knowledge_base::get_kb_conversations,
-            commands::knowledge_base::clear_kb_conversations,
-            commands::knowledge_base::get_kb_sources,
-            commands::knowledge_base::delete_kb_source,
-            commands::knowledge_base::import_kb_source,
-            commands::knowledge_base::get_kb_index_status,
-            commands::knowledge_base::build_kb_index,
-            commands::knowledge_base::drop_kb_index,
-            commands::knowledge_base::get_kb_tags,
-            commands::knowledge_base::get_ocr_cache_info,
-            commands::knowledge_base::clear_ocr_cache,
-            commands::services::get_service_statuses,
-            // Wiki
-            commands::wiki::get_wiki_projects,
-            commands::wiki::create_wiki_project,
-            commands::wiki::get_wiki_project,
-            commands::wiki::update_wiki_project,
-            commands::wiki::delete_wiki_project,
-            commands::wiki::get_wiki_pages,
-            commands::wiki::get_wiki_page,
-            commands::wiki::save_wiki_page,
-            commands::wiki::get_wiki_sources,
-            commands::wiki::add_wiki_source,
-            commands::wiki::delete_wiki_source,
-            commands::wiki::search_wiki,
-            commands::wiki::get_wiki_graph,
-            commands::wiki::get_wiki_stats,
-            commands::wiki::ingest_wiki_source,
-            commands::wiki::rescan_wiki_sources,
-            commands::wiki::get_wiki_tags,
             // App Config (应用配置)
             commands::app_config::get_app_configs,
             commands::app_config::apply_app_config,

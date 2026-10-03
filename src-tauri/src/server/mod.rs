@@ -3,7 +3,6 @@ pub mod admin_auth;
 pub mod admin_routes;
 pub mod event_bridge;
 pub mod handlers;
-pub mod knowledge_access;
 pub mod request_id;
 pub mod router;
 pub mod static_assets;
@@ -21,27 +20,6 @@ pub async fn start_server(
 ) -> Result<(), anyhow::Error> {
     let host = get_server_host(&state.settings);
     let port = get_server_port(&state.settings);
-
-    // 服务端点 token（KB/Wiki REST / MCP）配置核对：
-    // - 非回环绑定 + 缺 token：醒目多行告警，说明哪些端点已关闭、哪些面仍暴露；
-    // - token 过短 / 两个 token 相同：配置告警；
-    // - 回环绑定 + 缺 token：info 提示端点已关闭（桌面默认形态，不算暴露）。
-    let service_tokens = admin::ServiceTokens::from_env();
-    for warning in service_tokens.config_warnings() {
-        tracing::warn!("[服务端点鉴权] {warning}");
-    }
-    if let Some(exposure) = service_tokens.exposure_warning(&host) {
-        tracing::warn!("[服务端点鉴权] 非回环绑定且缺少服务 token：\n{exposure}");
-    } else {
-        let disabled = service_tokens.disabled_endpoints();
-        if !disabled.is_empty() {
-            tracing::info!(
-                "[服务端点鉴权] 未配置 DAMAOAPI_ADMIN_TOKEN / DAMAOAPI_MCP_TOKEN，\
-                 {} 不可用。RAG 查询可在密钥页面授权 API Key，无需环境变量 token。",
-                disabled.join("、")
-            );
-        }
-    }
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

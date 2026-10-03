@@ -462,19 +462,8 @@ export interface Settings {
   security_block_on_critical: boolean;
   routing_prefer_auth_accounts: boolean;
   routing_prefer_same_protocol: boolean;
-  // LLM OCR（扫描版 PDF 识别）全局配置
-  ocr_enabled: boolean;
-  ocr_max_pages: number;
-  ocr_concurrency: number;
-  ocr_dpi: number;
   log_detail_level: "basic" | "detailed" | string;
   log_retention_days: number;
-  // OTLP 导出（request_log → OTLP/HTTP JSON span，默认关闭）
-  otlp_enabled: boolean;
-  otlp_endpoint: string;
-  otlp_headers: string;
-  otlp_interval_secs: number;
-  otlp_batch_size: number;
   // 渠道主动健康探测
   probe_enabled: boolean;
   probe_interval_secs: number;

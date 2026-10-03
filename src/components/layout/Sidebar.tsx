@@ -10,7 +10,6 @@ import {
   Settings2,
   Server,
   ChevronRight,
-  Database,
   LogOut,
 } from "lucide-react";
 import { serverApi } from "../../lib/api";
@@ -28,12 +27,6 @@ const navItems = [
   },
   { to: "/channels", icon: Radio, label: "渠道" },
   { to: "/api-keys", icon: Key, label: "密钥" },
-  {
-    to: "/services",
-    icon: Database,
-    label: "服务",
-    subLabel: "RAG、Wiki、Prompt ...",
-  },
   { to: "/logs", icon: ScrollText, label: "日志" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];

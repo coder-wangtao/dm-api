@@ -63,28 +63,6 @@ const CODEX: ProviderSpec = ProviderSpec {
     supports_quota: true,
 };
 
-const KIMI: ProviderSpec = ProviderSpec {
-    kind: "kimi",
-    display_name: "Kimi Code",
-    icon_key: "moonshot",
-    login_mode: AuthLoginMode::DeviceCode,
-    login_methods: &[AuthLoginMode::DeviceCode],
-    supports_import: false,
-    supports_export: false,
-    supports_quota: false,
-};
-
-const GEMINI: ProviderSpec = ProviderSpec {
-    kind: "gemini",
-    display_name: "Antigravity",
-    icon_key: "google",
-    login_mode: AuthLoginMode::BrowserCallback,
-    login_methods: &[AuthLoginMode::BrowserCallback],
-    supports_import: false,
-    supports_export: false,
-    supports_quota: false,
-};
-
 const GROK: ProviderSpec = ProviderSpec {
     kind: "grok",
     display_name: "Grok",
@@ -96,7 +74,7 @@ const GROK: ProviderSpec = ProviderSpec {
     supports_quota: false,
 };
 
-const REGISTERED: &[&ProviderSpec] = &[&CODEX, &KIMI, &GEMINI, &GROK];
+const REGISTERED: &[&ProviderSpec] = &[&CODEX, &GROK];
 
 /// Spec for an explicit (non-`Other`) provider kind, if it is a known spec.
 pub fn provider_spec(kind: &ProviderKind) -> Option<&'static ProviderSpec> {

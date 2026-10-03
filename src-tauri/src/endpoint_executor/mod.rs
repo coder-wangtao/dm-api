@@ -37,7 +37,7 @@ mod mock_tests;
 
 use crate::channel_presets::AuthScheme;
 use crate::core::attempt::{
-    classify_http_status, AttemptFailure, AttemptResult, AttemptSuccess, FailureClass,
+    AttemptFailure, AttemptResult, AttemptSuccess, FailureClass,
     PreparedAttempt, TokenUsage,
 };
 use crate::core::channel_identity::ChannelIdentity;
@@ -689,13 +689,15 @@ fn gemini_prompt_feedback_failure(body: &Value) -> Option<AttemptFailure> {
     })
 }
 
-/// Backwards-compatible Anthropic helper retained for the existing callers and
-/// tests. New code should use [`semantic_failure`].
+/// Backwards-compatible Anthropic helper retained for tests.
+/// New code should use [`semantic_failure`].
+#[cfg(test)]
 pub fn anthropic_error_envelope_message(body: &Value) -> Option<String> {
     semantic_failure("anthropic", body).map(|failure| failure.message)
 }
 
 /// Parse a bounded response body and detect an Anthropic error envelope.
+#[cfg(test)]
 pub fn anthropic_error_envelope_from_bytes(bytes: &[u8]) -> Option<String> {
     serde_json::from_slice::<Value>(bytes)
         .ok()
@@ -747,6 +749,7 @@ pub fn semantic_stream_failure(protocol: &str, record: &[u8]) -> Option<AttemptF
 }
 
 /// Inspect one complete Anthropic SSE record for an error event/envelope.
+#[cfg(test)]
 pub fn anthropic_stream_error_message(record: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(record).ok()?;
     let event_error = text.lines().any(|line| line.trim() == "event: error");

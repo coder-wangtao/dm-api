@@ -33,9 +33,8 @@ use crate::utils;
 use axum::body::Body;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{self, DateTime, SecondsFormat, Utc};
+use chrono::{self, SecondsFormat, Utc};
 use futures_util::StreamExt;
-use rand::Rng;
 use rand::SeedableRng;
 use serde_json::json;
 use std::collections::HashMap;
@@ -292,6 +291,7 @@ struct StreamFailureMeta {
 /// seam; factoring them into a struct would ripple through `handlers.rs` (a
 /// frozen interface) for no functional gain, so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub async fn route_plan_response(
     plan: RoutePlan,
     audited: &AuditedRequest,
@@ -725,6 +725,7 @@ async fn write_stream_precommit_failure_log_with_meta(
 /// seam; factoring them into a struct would ripple through `handlers.rs` (a
 /// frozen interface), so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub async fn route_stream_plan(
     plan: RoutePlan,
     audited: &AuditedRequest,

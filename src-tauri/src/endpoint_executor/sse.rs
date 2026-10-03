@@ -237,6 +237,7 @@ impl StreamPumpCore {
         Ok(output)
     }
 
+    #[cfg(test)]
     pub fn committed(&self) -> bool {
         self.supervisor.committed()
     }

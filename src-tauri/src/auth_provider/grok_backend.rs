@@ -96,10 +96,13 @@ impl GrokProvider {
             return self.client.clone();
         }
         let proxy = crate::adaptor::grok_outbound_proxy_url();
+        // Login stays on GROK_HTTP_TIMEOUT. Chat streams must not: reqwest's
+        // timeout covers the whole body, so 30s kills a reply that is still
+        // generating. Connect is bounded; a silent stall still fails.
         crate::adaptor::with_proxy(
             reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
-                .timeout(GROK_HTTP_TIMEOUT),
+                .timeout(std::time::Duration::from_secs(10 * 60)),
             proxy.as_deref(),
         )
         .build()

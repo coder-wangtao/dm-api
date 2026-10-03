@@ -86,15 +86,6 @@ async fn probe_proxy(proxy_url: &str) -> Option<u64> {
     }
 }
 
-/// 端口猜测标签。
-fn label_for_port(port: u16) -> &'static str {
-    COMMON_PORTS
-        .iter()
-        .find(|(p, _, _)| *p == port)
-        .map(|(_, label, _)| *label)
-        .unwrap_or("未知代理")
-}
-
 /// 探测本机可用的出站代理端口，返回存活候选（按延迟升序）。
 #[tauri::command]
 pub async fn detect_local_proxies() -> Result<Vec<ProxyCandidate>, String> {

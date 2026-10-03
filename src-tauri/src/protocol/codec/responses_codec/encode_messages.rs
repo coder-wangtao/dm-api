@@ -6,6 +6,7 @@ use serde_json::Value;
 
 /// Messages → Chat → Responses.  The first encoder remains the authoritative
 /// validator for Anthropic-specific fields.
+#[allow(dead_code)]
 pub fn encode_messages_to_responses(
     body: &Value,
     model: &str,

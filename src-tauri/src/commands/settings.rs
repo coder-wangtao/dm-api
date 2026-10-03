@@ -50,28 +50,6 @@ pub struct Settings {
     pub routing_prefer_auth_accounts: bool,
     #[serde(default = "default_true")]
     pub routing_prefer_same_protocol: bool,
-    /// LLM OCR 总开关（默认关）。关闭时所有 PDF 走原有解析逻辑，不做扫描判定、无 LLM 调用。
-    #[serde(default = "default_false")]
-    pub ocr_enabled: bool,
-    #[serde(default = "default_ocr_max_pages")]
-    pub ocr_max_pages: i32,
-    #[serde(default = "default_ocr_concurrency")]
-    pub ocr_concurrency: i32,
-    #[serde(default = "default_ocr_dpi")]
-    pub ocr_dpi: i32,
-    /// OTLP 导出开关（默认关）。关闭时后台导出循环零流量。
-    #[serde(default = "default_false")]
-    pub otlp_enabled: bool,
-    /// OTLP/HTTP JSON 端点（如 Langfuse 的 /api/public/otel/v1/traces）。
-    #[serde(default)]
-    pub otlp_endpoint: String,
-    /// OTLP 附加请求头，JSON 对象字符串（鉴权头从设置读取，不入源码）。
-    #[serde(default)]
-    pub otlp_headers: String,
-    #[serde(default = "default_otlp_interval_secs")]
-    pub otlp_interval_secs: u64,
-    #[serde(default = "default_otlp_batch_size")]
-    pub otlp_batch_size: u64,
     /// 渠道主动健康探测开关（默认开）。关闭时零后台流量。
     #[serde(default = "default_true")]
     pub probe_enabled: bool,
@@ -96,12 +74,6 @@ pub struct Settings {
     pub proxy_url: String,
 }
 
-fn default_otlp_interval_secs() -> u64 {
-    30
-}
-fn default_otlp_batch_size() -> u64 {
-    50
-}
 fn default_probe_interval_secs() -> u64 {
     300
 }
@@ -142,15 +114,6 @@ fn default_security_enabled() -> bool {
 fn default_security_mode() -> String {
     "audit".to_string()
 }
-fn default_ocr_max_pages() -> i32 {
-    200
-}
-fn default_ocr_concurrency() -> i32 {
-    2
-}
-fn default_ocr_dpi() -> i32 {
-    200
-}
 fn default_log_detail_level() -> String {
     "basic".to_string()
 }
@@ -182,15 +145,6 @@ impl Default for Settings {
             security_block_on_critical: default_false(),
             routing_prefer_auth_accounts: default_true(),
             routing_prefer_same_protocol: default_true(),
-            ocr_enabled: default_false(),
-            ocr_max_pages: default_ocr_max_pages(),
-            ocr_concurrency: default_ocr_concurrency(),
-            ocr_dpi: default_ocr_dpi(),
-            otlp_enabled: default_false(),
-            otlp_endpoint: String::new(),
-            otlp_headers: String::new(),
-            otlp_interval_secs: default_otlp_interval_secs(),
-            otlp_batch_size: default_otlp_batch_size(),
             probe_enabled: default_true(),
             probe_interval_secs: default_probe_interval_secs(),
             cache_enabled: default_false(),
@@ -274,15 +228,6 @@ pub async fn get_settings(state: tauri::State<'_, Arc<AppState>>) -> Result<Sett
         security_block_on_critical: get_bool(store, "security.block_on_critical", false),
         routing_prefer_auth_accounts: get_bool(store, "routing.prefer_auth_accounts", true),
         routing_prefer_same_protocol: get_bool(store, "routing.prefer_same_protocol", true),
-        ocr_enabled: get_bool(store, "ocr.enabled", false),
-        ocr_max_pages: get_u64(store, "ocr.max_pages", 200) as i32,
-        ocr_concurrency: get_u64(store, "ocr.concurrency", 2) as i32,
-        ocr_dpi: get_u64(store, "ocr.dpi", 200) as i32,
-        otlp_enabled: get_bool(store, "otlp.enabled", false),
-        otlp_endpoint: get_str(store, "otlp.endpoint", ""),
-        otlp_headers: get_str(store, "otlp.headers", ""),
-        otlp_interval_secs: get_u64(store, "otlp.export_interval_secs", 30),
-        otlp_batch_size: get_u64(store, "otlp.batch_size", 50),
         probe_enabled: get_bool(store, "probe.enabled", true),
         probe_interval_secs: get_u64(store, "probe.interval_secs", 300),
         cache_enabled: get_bool(store, "cache.semantic_enabled", false),
@@ -390,39 +335,6 @@ pub async fn save_settings(
         (
             "routing.prefer_same_protocol".to_string(),
             serde_json::json!(settings.routing_prefer_same_protocol),
-        ),
-        (
-            "ocr.enabled".to_string(),
-            serde_json::json!(settings.ocr_enabled),
-        ),
-        (
-            "ocr.max_pages".to_string(),
-            serde_json::json!(settings.ocr_max_pages),
-        ),
-        (
-            "ocr.concurrency".to_string(),
-            serde_json::json!(settings.ocr_concurrency),
-        ),
-        ("ocr.dpi".to_string(), serde_json::json!(settings.ocr_dpi)),
-        (
-            "otlp.enabled".to_string(),
-            serde_json::json!(settings.otlp_enabled),
-        ),
-        (
-            "otlp.endpoint".to_string(),
-            serde_json::json!(settings.otlp_endpoint),
-        ),
-        (
-            "otlp.headers".to_string(),
-            serde_json::json!(settings.otlp_headers),
-        ),
-        (
-            "otlp.export_interval_secs".to_string(),
-            serde_json::json!(settings.otlp_interval_secs),
-        ),
-        (
-            "otlp.batch_size".to_string(),
-            serde_json::json!(settings.otlp_batch_size),
         ),
         (
             "probe.enabled".to_string(),

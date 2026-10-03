@@ -143,10 +143,6 @@ fn mask_key(key: &str) -> String {
     crate::utils::secret::mask_secret(key)
 }
 
-fn to_dto(c: Channel) -> ChannelDto {
-    c.into()
-}
-
 #[tauri::command]
 pub async fn get_channels(
     state: tauri::State<'_, std::sync::Arc<AppState>>,

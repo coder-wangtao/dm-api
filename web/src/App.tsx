@@ -15,7 +15,6 @@ import { ApiKeysPage } from "@app/pages/ApiKeysPage";
 import { LogsPage } from "@app/pages/LogsPage";
 import { SettingsPage } from "@app/pages/SettingsPage";
 import { UsagePage } from "@app/pages/UsagePage";
-import { KnowledgeBasePage } from "@app/pages/KnowledgeBasePage";
 import { settingsApi } from "@app/lib/api";
 import { WEB_UNAUTHORIZED_EVENT } from "@app/lib/runtime";
 import { ErrorBoundary } from "@app/components/ErrorBoundary";
@@ -129,31 +128,6 @@ function App() {
                     <Route path="/api-keys" element={<ApiKeysPage />} />
                     <Route path="/logs" element={<LogsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
-                    <Route
-                      path="/prompt-templates"
-                      element={<Navigate to="/services/prompts" replace />}
-                    />
-                    <Route path="/services" element={<KnowledgeBasePage />} />
-                    <Route
-                      path="/services/knowledge-base"
-                      element={<KnowledgeBasePage />}
-                    />
-                    <Route
-                      path="/services/mcp"
-                      element={<KnowledgeBasePage />}
-                    />
-                    <Route
-                      path="/services/wiki"
-                      element={<KnowledgeBasePage />}
-                    />
-                    <Route
-                      path="/services/skills"
-                      element={<KnowledgeBasePage />}
-                    />
-                    <Route
-                      path="/services/prompts"
-                      element={<KnowledgeBasePage />}
-                    />
                     <Route path="*" element={<Navigate to="/" replace />} />
                   </Routes>
                 </Layout>

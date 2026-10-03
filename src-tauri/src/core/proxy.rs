@@ -6,7 +6,6 @@ use crate::db::repository::Repository;
 use crate::security;
 use crate::settings_store::SettingsStore;
 use crate::utils;
-use rand::Rng;
 use std::sync::Arc;
 use std::time::Instant;
 
