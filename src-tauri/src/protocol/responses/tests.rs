@@ -31,7 +31,7 @@ fn extract_event_data(event: &str) -> Value {
 }
 
 /// 63 raw upstream fragments captured from `handle_responses_stream` via
-/// `WALIAPI_DEBUG_SSE` instrumentation (deepseek-v4-flash / OpenCode-GO
+/// `DAMAOAPI_DEBUG_SSE` instrumentation (deepseek-v4-flash / OpenCode-GO
 /// channel, 2026-08-08). Every SSE record is split across multiple TCP
 /// chunks — often mid-JSON, with the `\n\n` terminator landing in a fragment
 /// that starts mid-record. This is the real-world fragmentation that used to

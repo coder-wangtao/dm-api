@@ -231,11 +231,11 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output
 
 #[test]
 fn stream_tool_call_arguments_delivered_whole_not_piecemeal() {
-    // WaLiCode 实测：16 次工具调用全部只收到参数末尾的 "]}"。
+    // DamaoCode 实测：16 次工具调用全部只收到参数末尾的 "]}"。
     //
     // 起初怀疑是「每条 delta 都重复 id/name，客户端把带 id 当新调用而重置」，
     // 改成仅首个 delta 带身份字段后复测——问题变成只剩*第一个*分片，说明
-    // WaLiCode 根本不做分片累积，而是每次直接用最新收到的 delta.arguments
+    // DamaoCode 根本不做分片累积，而是每次直接用最新收到的 delta.arguments
     // 覆盖，不管有没有 id。对分片型客户端，唯一安全的做法是不分片：
     // arguments.delta 只更新 call_id/name 等元数据、不下发内容，完整参数
     // 在 arguments.done 时一次性发出。

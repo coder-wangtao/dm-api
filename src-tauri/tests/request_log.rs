@@ -579,7 +579,7 @@ async fn stream_segments_purged_by_all_delete_paths() {
 /// 转发**给上游供应商；"只留 3 条"仅是审计日志的存储与展示裁剪。本测试走真实的
 /// `create_log_with_policy`（内存 SQLite + 全量迁移），同时钉住四件事：
 ///   1. 调用方持有的 `RequestLog` 逐字节不变（截断作用于克隆）；
-///   2. 落库的那一行才是裁到 3 条的、并带 `_wali_brief` 标记；
+///   2. 落库的那一行才是裁到 3 条的、并带 `_damao_brief` 标记；
 ///   3. 统计字段（token / 状态码 / 耗时 / 密钥 / 渠道）一个不少；
 ///   4. 响应正文与流式内容段照旧落库（请求侧的裁剪不得牵连响应侧）。
 #[tokio::test]
@@ -621,7 +621,7 @@ async fn brief_policy_truncates_only_the_stored_copy_not_the_forwarded_record() 
         kept[0]["content"].as_str().unwrap().starts_with("m2"),
         "被丢掉的应是最旧的消息"
     );
-    assert_eq!(body["_wali_brief"]["omitted_messages"], json!(2));
+    assert_eq!(body["_damao_brief"]["omitted_messages"], json!(2));
 
     // 3) 统计口径不受影响
     assert_eq!(stored.total_tokens, 15);

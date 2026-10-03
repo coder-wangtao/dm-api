@@ -844,7 +844,7 @@ async fn oauth_callback(
     if let Some(sender) = callback.sender.lock().await.take() {
         let _ = sender.send(result);
     }
-    (StatusCode::OK, "Codex login complete; return to WaLiAPI.")
+    (StatusCode::OK, "Codex login complete; return to DaMaoAPI.")
 }
 
 /// Detect a sub2api export document (`type: "sub2api-data"`).
@@ -1839,7 +1839,7 @@ mod tests {
     #[test]
     fn export_is_nested_private_backed_up_and_preserves_old_file_if_rename_fails() {
         let directory =
-            std::env::temp_dir().join(format!("waliapi-codex-login-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("damaoapi-codex-login-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("auth.json");
         let old = b"old auth bytes";

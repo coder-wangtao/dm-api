@@ -30,7 +30,7 @@ pub fn budget_to_level(budget: i64) -> Option<&'static str> {
 /// Map an OpenAI `reasoning_effort` (or `output_config.effort`) value to a
 /// Claude `output_config.effort`, following CLIProxyAPI's `MapToClaudeEffort`.
 ///
-/// WaLiAPI deliberately has no model registry, so we cannot look up a model's
+/// DamaoAPI deliberately has no model registry, so we cannot look up a model's
 /// `supports_max` — `xhigh`/`max` conservatively collapse to `high` (matching
 /// CPA's no-supportsMax default and 9router's `claude-adaptive`).  `low`/
 /// `medium`/`high` pass through unchanged; `minimal` maps to `low`; `auto` and

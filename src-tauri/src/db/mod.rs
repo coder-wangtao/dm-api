@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use tauri::{AppHandle, Manager};
 
-/// 迁移前备份文件名前缀。备份形如 `waliapi.db.pre-upgrade-20260806-190400`，与数据库同目录。
-const BACKUP_PREFIX: &str = "waliapi.db.pre-upgrade-";
+/// 迁移前备份文件名前缀。备份形如 `damaoapi.db.pre-upgrade-20260806-190400`，与数据库同目录。
+const BACKUP_PREFIX: &str = "damaoapi.db.pre-upgrade-";
 
 /// 保留的最近备份份数（超出后删除最旧的）。
 const BACKUP_KEEP: usize = 3;
@@ -74,7 +74,7 @@ async fn current_db_version(pool: &SqlitePool) -> i64 {
     max.unwrap_or(0)
 }
 
-/// 生成本次备份路径：`waliapi.db.pre-upgrade-<YYYYmmdd-HHMMSS>`，与数据库同目录。
+/// 生成本次备份路径：`damaoapi.db.pre-upgrade-<YYYYmmdd-HHMMSS>`，与数据库同目录。
 fn make_backup_path(db_path: &Path) -> PathBuf {
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
     db_path.with_file_name(format!("{BACKUP_PREFIX}{ts}"))
@@ -112,8 +112,8 @@ fn prune_old_backups(db_path: &Path) -> Result<(), String> {
 /// 迁移前自动备份。仅当数据库已存在（有迁移记录）且 schema 版本低于当前迁移集时执行。
 ///
 /// 备份用 SQLite `VACUUM INTO` 生成一致快照（原子、对 live DB 安全），命名
-/// `waliapi.db.pre-upgrade-<YYYYmmdd-HHMMSS>`，随后按 `BACKUP_KEEP` 清理旧备份。
-/// 恢复为纯文件级：手动把备份文件复制回 `waliapi.db` 即可。
+/// `damaoapi.db.pre-upgrade-<YYYYmmdd-HHMMSS>`，随后按 `BACKUP_KEEP` 清理旧备份。
+/// 恢复为纯文件级：手动把备份文件复制回 `damaoapi.db` 即可。
 ///
 /// 无需备份时返回 `Ok(None)`。备份失败只记录错误，不阻断启动。
 async fn backup_before_migration(
@@ -158,11 +158,11 @@ impl Database {
         Self::new_with_path(&app_data_dir).await
     }
 
-    /// headless（waliapi-web）入口：显式指定数据目录。
+    /// headless（damaoapi-web）入口：显式指定数据目录。
     pub async fn new_with_path(app_data_dir: &Path) -> Self {
         std::fs::create_dir_all(app_data_dir).expect("failed to create app data dir");
 
-        let db_path = app_data_dir.join("waliapi.db");
+        let db_path = app_data_dir.join("damaoapi.db");
         let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
         let pool = SqlitePoolOptions::new()
@@ -200,7 +200,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     fn temp_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("waliapi-backup-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("damaoapi-backup-{}", uuid::Uuid::new_v4()))
     }
 
     async fn test_pool(db_path: &Path) -> SqlitePool {
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn make_backup_path_uses_pre_upgrade_prefix() {
-        let db_path = Path::new("/tmp/waliapi/waliapi.db");
+        let db_path = Path::new("/tmp/damaoapi/damaoapi.db");
         let backup = make_backup_path(db_path);
         let name = backup.file_name().unwrap().to_string_lossy().to_string();
         assert!(name.starts_with(BACKUP_PREFIX), "备份名应带前缀: {name}");
@@ -247,7 +247,7 @@ mod tests {
                 .all(|(_, c)| c.is_ascii_digit()),
             "时间戳除分隔符外应全为数字: {ts}"
         );
-        assert_eq!(backup.parent(), Some(Path::new("/tmp/waliapi")));
+        assert_eq!(backup.parent(), Some(Path::new("/tmp/damaoapi")));
     }
 
     #[test]
@@ -267,10 +267,10 @@ mod tests {
             let _ = f.set_modified(ts);
         }
         // 无关文件不应被清理
-        std::fs::write(dir.join("waliapi.db"), b"db").unwrap();
-        std::fs::write(dir.join("config.toml.waliapi-backup"), b"cfg").unwrap();
+        std::fs::write(dir.join("damaoapi.db"), b"db").unwrap();
+        std::fs::write(dir.join("config.toml.damaoapi-backup"), b"cfg").unwrap();
 
-        prune_old_backups(&dir.join("waliapi.db")).unwrap();
+        prune_old_backups(&dir.join("damaoapi.db")).unwrap();
 
         let remaining: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
@@ -286,9 +286,9 @@ mod tests {
                 "应保留最新的三份，但找到: {name}"
             );
         }
-        assert!(dir.join("waliapi.db").exists(), "数据库文件不应被清理");
+        assert!(dir.join("damaoapi.db").exists(), "数据库文件不应被清理");
         assert!(
-            dir.join("config.toml.waliapi-backup").exists(),
+            dir.join("config.toml.damaoapi-backup").exists(),
             "配置文件不应被清理"
         );
 
@@ -299,7 +299,7 @@ mod tests {
     async fn creates_backup_when_schema_is_behind() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("waliapi.db");
+        let db_path = dir.join("damaoapi.db");
         let pool = test_pool(&db_path).await;
         seed_legacy_db(&pool).await;
 
@@ -337,7 +337,7 @@ mod tests {
     async fn no_backup_when_already_latest() {
         let dir = temp_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let db_path = dir.join("waliapi.db");
+        let db_path = dir.join("damaoapi.db");
         let pool = test_pool(&db_path).await;
         seed_legacy_db(&pool).await;
         // 把迁移记录改成当前最新版本

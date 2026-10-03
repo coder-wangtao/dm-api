@@ -387,7 +387,7 @@ mod tests {
     }
 
     fn settings_at(enabled: bool) -> SettingsStore {
-        let dir = std::env::temp_dir().join(format!("waliapi-cache-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-cache-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = SettingsStore::file(dir.join("settings.json"));
         store

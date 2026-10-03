@@ -16,7 +16,7 @@ const PAGE_SIZE = 20;
 
 // 与 src-tauri/src/audit_log.rs 的 BRIEF_MARKER_KEY 保持一致：「简要」级别裁断
 // 请求消息列表后写回 JSON 顶层的标记字段名（前导下划线避开厂商真实字段）。
-const BRIEF_MARKER_KEY = "_wali_brief";
+const BRIEF_MARKER_KEY = "_damao_brief";
 
 const RISK_META: Record<string, { label: string; cls: string }> = {
   clean: { label: "安全", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
@@ -256,7 +256,7 @@ export function LogsPage() {
   // 默认开启保持既有语义，可关闭（偏好持久化，GAP-06，上游 #28 的跟进）。
   // 有日志行展开时不做静默轮询——新日志会把旧行顶出当前页导致详情
   // 悄然收起；正在阅读的详情优先（GAP-06）。
-  const [autoRefresh, setAutoRefresh] = useState(() => localStorage.getItem("waliapi:logs-auto-refresh") !== "off");
+  const [autoRefresh, setAutoRefresh] = useState(() => localStorage.getItem("damaoapi:logs-auto-refresh") !== "off");
   const pageRef = useRef(page);
   pageRef.current = page;
   const expandedIdRef = useRef(expandedId);
@@ -280,7 +280,7 @@ export function LogsPage() {
 
   const toggleAutoRefresh = () => {
     setAutoRefresh(prev => {
-      localStorage.setItem("waliapi:logs-auto-refresh", prev ? "off" : "on");
+      localStorage.setItem("damaoapi:logs-auto-refresh", prev ? "off" : "on");
       return !prev;
     });
   };
@@ -864,7 +864,7 @@ function LogDetail({ log }: { log: RequestLog }) {
   const byteSize = log.request_body ? new Blob([log.request_body]).size : 0;
   const sizeLabel = byteSize > 1024 ? `${(byteSize / 1024).toFixed(1)} KB` : `${byteSize} B`;
 
-  // 「简要」级别把请求消息列表裁到最新 N 条后，会在 JSON 顶层留一个 _wali_brief 标记
+  // 「简要」级别把请求消息列表裁到最新 N 条后，会在 JSON 顶层留一个 _damao_brief 标记
   // （与后端 BRIEF_MARKER_KEY 同名）。这里读出来告诉用户少看到了什么。
   const briefRaw = parsed?.[BRIEF_MARKER_KEY] as Record<string, unknown> | undefined;
   const briefMarker =

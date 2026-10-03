@@ -17,12 +17,12 @@ import {
 type Platform = "curl-mac" | "curl-windows" | "javascript" | "typescript" | "java";
 type TestState = "idle" | "running" | "success" | "error";
 type Protocol = "chat" | "responses" | "anthropic";
-type UsageTab = "api" | "claude-code" | "codex" | "gemini-cli" | "claude-desktop" | "opencode" | "openclaw" | "hermes" | "walicode";
+type UsageTab = "api" | "claude-code" | "codex" | "gemini-cli" | "claude-desktop" | "opencode" | "openclaw" | "hermes" | "damaocode";
 
 const APP_TABS: { id: UsageTab; label: string }[] = [
   { id: "codex", label: "Codex" },
   { id: "claude-code", label: "Claude Code" },
-  // { id: "walicode", label: "WaLiCode" }, // 暂时隐藏，配置写入不生效问题待解决
+  // { id: "damaocode", label: "DaMaoCode" }, // 暂时隐藏，配置写入不生效问题待解决
   // { id: "gemini-cli", label: "Gemini CLI" },
   // { id: "claude-desktop", label: "Claude Desktop" },
   { id: "opencode", label: "OpenCode" },
@@ -72,8 +72,8 @@ export function UsagePage() {
   const [usageTab, setUsageTab] = useState<UsageTab>("api");
 
   // Persist model & key selection across sessions
-  const modelStorageKey = "waliapi:usage-model";
-  const keyStorageKey = "waliapi:usage-key";
+  const modelStorageKey = "damaoapi:usage-model";
+  const keyStorageKey = "damaoapi:usage-key";
 
   useEffect(() => {
     Promise.all([
@@ -148,7 +148,7 @@ export function UsagePage() {
       setKeyValueLoading(false);
     }
   };
-  const keyForSamples = keyValue || "sk-waliapi-****（点击「载入密钥」后填充）";
+  const keyForSamples = keyValue || "sk-damaoapi-****（点击「载入密钥」后填充）";
 
   // Three categories: API channel models, Auth account models, mapping aliases (unified).
   // Filtered by the selected API key's allowed/denied lists.
@@ -516,7 +516,7 @@ public class AnthropicTest {
               "opencode": { active: "bg-amber-500 text-white", idle: "bg-amber-50 text-amber-700 hover:bg-amber-100" },
               "openclaw": { active: "bg-teal-500 text-white", idle: "bg-teal-50 text-teal-700 hover:bg-teal-100" },
               "hermes": { active: "bg-rose-500 text-white", idle: "bg-rose-50 text-rose-700 hover:bg-rose-100" },
-              "walicode": { active: "bg-indigo-500 text-white", idle: "bg-indigo-50 text-indigo-700 hover:bg-indigo-100" },
+              "damaocode": { active: "bg-indigo-500 text-white", idle: "bg-indigo-50 text-indigo-700 hover:bg-indigo-100" },
             };
             const c = colors[app.id] || { active: "bg-slate-700 text-white", idle: "bg-slate-100 text-slate-600" };
             return (

@@ -73,7 +73,7 @@ export function WebAdminGate({ children }: { children: ReactNode }) {
           </span>
           <div>
             <h1 className="text-2xl font-bold tracking-[-0.03em] text-slate-900">
-              WaLiAPI Web
+              DaMaoAPI Web
             </h1>
             <p className="mt-1 text-sm text-slate-500">
               连接此 Linux 实例的管理后台

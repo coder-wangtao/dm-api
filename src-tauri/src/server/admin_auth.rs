@@ -311,7 +311,7 @@ pub async fn ensure_initial_admin(
 
     // 临时密码必须出现在容器 stdout（docker logs），同时写入数据目录文件
     println!("==============================================");
-    println!("WaLiAPI Web 管理面板初始账号: {username}");
+    println!("DamaoAPI Web 管理面板初始账号: {username}");
     println!("初始临时密码: {password}");
     println!("请登录后立即修改密码。");
     println!("==============================================");

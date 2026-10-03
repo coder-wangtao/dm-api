@@ -177,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn probe_step_updates_columns_but_logs_only_new_failures() {
         let pool = memory_db().await;
-        let dir = std::env::temp_dir().join(format!("waliapi-probe-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = settings_at(&dir, true);
 
@@ -224,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn repeated_probe_failure_records_only_first_edge() {
         let pool = memory_db().await;
-        let dir = std::env::temp_dir().join(format!("waliapi-probe-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = settings_at(&dir, true);
         seed_channel(&pool, "ch-bad", "http://127.0.0.1:1").await;
@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn probe_state_transitions_are_recorded() {
         let pool = memory_db().await;
-        let dir = std::env::temp_dir().join(format!("waliapi-probe-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = settings_at(&dir, true);
         seed_channel(&pool, "ch-flaky", "http://127.0.0.1:1").await;
@@ -324,7 +324,7 @@ mod tests {
     #[tokio::test]
     async fn probe_recovery_without_failure_row_writes_nothing() {
         let pool = memory_db().await;
-        let dir = std::env::temp_dir().join(format!("waliapi-probe-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = settings_at(&dir, true);
         let healthy = mock_models_endpoint().await;
@@ -413,7 +413,7 @@ mod tests {
     #[tokio::test]
     async fn probe_disabled_means_zero_traffic_and_writes() {
         let pool = memory_db().await;
-        let dir = std::env::temp_dir().join(format!("waliapi-probe-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-probe-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let settings = settings_at(&dir, false);
 

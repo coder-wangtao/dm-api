@@ -1,11 +1,11 @@
 //! 服务端点 Bearer token 鉴权（KB/Wiki REST 与 MCP）。
 //!
 //! 凭证域划分：
-//! - `/v1/*` 数据面：后台创建的 `sk-waliapi-*` 密钥（handlers 内校验）；
+//! - `/v1/*` 数据面：后台创建的 `sk-damaoapi-*` 密钥（handlers 内校验）；
 //! - `/admin/api/*` Web 管理面板：用户名/密码会话（`admin_routes.rs`）；
 //! - RAG 查询：后台创建并授予知识库权限的 API Key；
 //! - KB/Wiki 管理 REST（`/api/kb/*`、`/api/wiki/*`）：`DAMAOAPI_ADMIN_TOKEN`；
-//! - MCP（`/mcp*`）：`WALIAPI_MCP_TOKEN`（独立凭证，MCP 客户端不获得管理面权限）。
+//! - MCP（`/mcp*`）：`DAMAOAPI_MCP_TOKEN`（独立凭证，MCP 客户端不获得管理面权限）。
 //!
 //! 普通 API Key 可查询显式授权的 RAG；未认证访问仍返回 401，管理端凭据保持兼容。
 
@@ -80,7 +80,7 @@ impl ServiceTokens {
         Some(format!(
             "服务绑定在非回环地址 {host}，但未配置：\n  - {}\n\
              缺失 token 的旧管理入口不可用；已授权的 API Key 仍可查询 RAG，匿名访问返回 401；\n\
-             但 /v1 数据面（仅 sk-waliapi-* 密钥保护）与 Web 管理面板（登录会话保护）\
+             但 /v1 数据面（仅 sk-damaoapi-* 密钥保护）与 Web 管理面板（登录会话保护）\
              将直接暴露给该网络上的所有主机。\n\
              请设置上述环境变量，或改绑 127.0.0.1 并由反向代理（Caddy/Nginx + HTTPS）对外提供服务。",
             missing.join("\n  - ")

@@ -1,7 +1,7 @@
 //! 数据面请求关联键：X-Request-Id 标准化。
 //!
-//! 上游此前仅有自定义 `Wali-Trace-Id` 头（仅部分端点读取、缺省不生成、不回显）。
-//! 本模块统一为：标准 `X-Request-Id` 优先（`Wali-Trace-Id` 继续兼容），缺省生成
+//! 上游此前仅有自定义 `Damao-Trace-Id` 头（仅部分端点读取、缺省不生成、不回显）。
+//! 本模块统一为：标准 `X-Request-Id` 优先（`Damao-Trace-Id` 继续兼容），缺省生成
 //! UUIDv4，响应头回显，值随既有 `request_logs.trace_id` 列落库。
 //!
 //! 中间件 resolve 后把结果**回写请求头**，handler 侧调用同一 `resolve` 读到的
@@ -29,9 +29,9 @@ pub fn sanitize(value: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// 解析请求关联键：`X-Request-Id` 优先 → `Wali-Trace-Id` 兼容回退 → 生成 UUIDv4。
+/// 解析请求关联键：`X-Request-Id` 优先 → `Damao-Trace-Id` 兼容回退 → 生成 UUIDv4。
 pub fn resolve(headers: &HeaderMap) -> String {
-    for name in ["x-request-id", "wali-trace-id"] {
+    for name in ["x-request-id", "damao-trace-id"] {
         if let Some(value) = headers.get(name).and_then(|h| h.to_str().ok()) {
             if let Some(valid) = sanitize(value) {
                 return valid;
@@ -94,14 +94,14 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prefers_x_request_id_over_wali_trace_id() {
-        let map = headers(&[("x-request-id", "std-1"), ("wali-trace-id", "legacy-1")]);
+    fn resolve_prefers_x_request_id_over_damao_trace_id() {
+        let map = headers(&[("x-request-id", "std-1"), ("damao-trace-id", "legacy-1")]);
         assert_eq!(resolve(&map), "std-1");
     }
 
     #[test]
-    fn resolve_falls_back_to_wali_trace_id() {
-        let map = headers(&[("wali-trace-id", "legacy-2")]);
+    fn resolve_falls_back_to_damao_trace_id() {
+        let map = headers(&[("damao-trace-id", "legacy-2")]);
         assert_eq!(resolve(&map), "legacy-2");
     }
 
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn resolve_treats_invalid_value_as_absent() {
         // 非法 X-Request-Id 不透传，回退兼容头；都非法则生成新值
-        let map = headers(&[("x-request-id", "bad value"), ("wali-trace-id", "ok-1")]);
+        let map = headers(&[("x-request-id", "bad value"), ("damao-trace-id", "ok-1")]);
         assert_eq!(resolve(&map), "ok-1");
         let map = headers(&[("x-request-id", &"x".repeat(200))]);
         assert!(uuid::Uuid::parse_str(&resolve(&map)).is_ok());

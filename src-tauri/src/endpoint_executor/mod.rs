@@ -483,7 +483,7 @@ pub fn is_unsafe_proxy_header(name: &str) -> bool {
             | "content-type"
             | "expect"
             | "accept-encoding"
-            | "wali-trace-id"
+            | "damao-trace-id"
     )
 }
 

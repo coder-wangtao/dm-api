@@ -52,7 +52,7 @@ pub async fn start_server(
     );
 
     tracing::info!(
-        "WaLiAPI server listening on http://{}:{}",
+        "DamaoAPI server listening on http://{}:{}",
         host,
         actual_port
     );
@@ -67,7 +67,7 @@ pub async fn start_server(
 }
 
 fn get_server_host(settings: &SettingsStore) -> String {
-    if let Ok(host) = std::env::var("WALIAPI_SERVER_HOST") {
+    if let Ok(host) = std::env::var("DAMAOAPI_SERVER_HOST") {
         let trimmed = host.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
@@ -82,7 +82,7 @@ fn get_server_host(settings: &SettingsStore) -> String {
 }
 
 fn get_server_port(settings: &SettingsStore) -> u16 {
-    if let Ok(port) = std::env::var("WALIAPI_SERVER_PORT") {
+    if let Ok(port) = std::env::var("DAMAOAPI_SERVER_PORT") {
         if let Ok(value) = port.trim().parse::<u16>() {
             if value != 0 {
                 return value;

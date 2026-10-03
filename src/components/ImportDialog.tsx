@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { isTauriRuntime } from "../lib/runtime";
 
-type ImportMode = "menu" | "walicode" | "waliapi" | "scan";
+type ImportMode = "menu" | "damaocode" | "damaoapi" | "scan";
 
 /** 桌面端走原生文件对话框；Web 版用浏览器文件选择器读取内容。 */
 const pickImportContent = (): Promise<string | null> =>
@@ -43,7 +43,7 @@ export function ImportDialog({
     new Set(),
   );
 
-  const handleWalicodeImport = async () => {
+  const handleDamaocodeImport = async () => {
     setLoading(true);
     setError(null);
     try {
@@ -52,7 +52,7 @@ export function ImportDialog({
         setLoading(false);
         return;
       }
-      const res = await importExportApi.importWalicodeBackup(content);
+      const res = await importExportApi.importDamaocodeBackup(content);
       setResult(res);
       if (res.imported > 0) {
         onImported();
@@ -63,7 +63,7 @@ export function ImportDialog({
     setLoading(false);
   };
 
-  const handleWaliapiImport = async () => {
+  const handleDamaoapiImport = async () => {
     setLoading(true);
     setError(null);
     try {
@@ -72,7 +72,7 @@ export function ImportDialog({
         setLoading(false);
         return;
       }
-      const res = await importExportApi.importWaliapiExport(content);
+      const res = await importExportApi.importDamaoapiExport(content);
       setResult(res);
       if (res.imported > 0) {
         onImported();
@@ -151,8 +151,8 @@ export function ImportDialog({
         <div className="flex items-center justify-between border-b border-border px-5 py-4 sticky top-0 bg-inherit z-20">
           <h2 className="text-lg font-semibold">
             {mode === "menu" && "导入渠道"}
-            {mode === "walicode" && "导入 WaLiCode 备份"}
-            {mode === "waliapi" && "导入 WaLiAPI 导出文件"}
+            {mode === "damaocode" && "导入 DaMaoCode 备份"}
+            {mode === "damaoapi" && "导入 DaMaoAPI 导出文件"}
             {mode === "scan" &&
               (isTauriRuntime() ? "扫描本地 AI 配置" : "扫描服务器 AI 配置")}
           </h2>
@@ -205,7 +205,7 @@ export function ImportDialog({
                 title="导入 DamaoAPI 导出文件"
                 description="从其他 DamaoAPI 实例导出的 JSON 文件导入渠道"
                 onClick={() => {
-                  setMode("waliapi");
+                  setMode("damaoapi");
                   setResult(null);
                   setError(null);
                 }}
@@ -227,10 +227,10 @@ export function ImportDialog({
 
               <ImportOption
                 icon={<FileJson size={20} />}
-                title="导入 WaLiCode 备份"
-                description="从 walicode-full-backup.json 导入所有 AI 供应商配置"
+                title="导入 DaMaoCode 备份"
+                description="从 damaocode-full-backup.json 导入所有 AI 供应商配置"
                 onClick={() => {
-                  setMode("walicode");
+                  setMode("damaocode");
                   setResult(null);
                   setError(null);
                 }}
@@ -238,20 +238,20 @@ export function ImportDialog({
             </div>
           )}
 
-          {/* Walicode mode */}
-          {mode === "walicode" && (
+          {/* Damaocode mode */}
+          {mode === "damaocode" && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-border bg-background/40 px-4 py-4 text-sm">
-                <p className="mb-2 font-medium">WaLiCode 备份导入说明</p>
+                <p className="mb-2 font-medium">DaMaoCode 备份导入说明</p>
                 <ul className="space-y-1 text-muted-foreground text-xs">
-                  <li>• 支持 walicode-full-backup.json 格式</li>
+                  <li>• 支持 damaocode-full-backup.json 格式</li>
                   <li>• 将导入 aiSettings 中的主供应商和所有自定义供应商</li>
                   <li>• 已存在的同名渠道将被跳过</li>
                   <li>• API Key 为空的远程渠道将被跳过</li>
                 </ul>
               </div>
               <button
-                onClick={handleWalicodeImport}
+                onClick={handleDamaocodeImport}
                 disabled={loading}
                 className="action-primary w-full justify-center"
               >
@@ -271,19 +271,19 @@ export function ImportDialog({
             </div>
           )}
 
-          {/* Waliapi mode */}
-          {mode === "waliapi" && (
+          {/* Damaoapi mode */}
+          {mode === "damaoapi" && (
             <div className="space-y-4">
               <div className="rounded-2xl border border-border bg-background/40 px-4 py-4 text-sm">
-                <p className="mb-2 font-medium">WaLiAPI 导出文件导入说明</p>
+                <p className="mb-2 font-medium">DaMaoAPI 导出文件导入说明</p>
                 <ul className="space-y-1 text-muted-foreground text-xs">
-                  <li>• 支持其他 WaLiAPI 实例导出的 JSON 文件</li>
+                  <li>• 支持其他 DaMaoAPI 实例导出的 JSON 文件</li>
                   <li>• 包含渠道类型、模型列表、API Key 等完整信息</li>
                   <li>• 已存在的同名渠道将被跳过</li>
                 </ul>
               </div>
               <button
-                onClick={handleWaliapiImport}
+                onClick={handleDamaoapiImport}
                 disabled={loading}
                 className="action-primary w-full justify-center"
               >

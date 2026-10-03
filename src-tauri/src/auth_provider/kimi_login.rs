@@ -26,7 +26,7 @@ pub const KIMI_LOGIN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub const KIMI_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Header values fixed by the official Kimi transport; the renderer/downstream
 /// can never override them.
-const KIMI_USER_AGENT: &str = "kimi-code-cli/1.0 (WaLiAPI)";
+const KIMI_USER_AGENT: &str = "kimi-code-cli/1.0 (DaMaoAPI)";
 const KIMI_CHECK_INTERVAL: u64 = 5;
 
 /// Server-side device authorization response (RFC 8628 §3.2).

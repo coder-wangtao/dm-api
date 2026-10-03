@@ -283,10 +283,10 @@ export interface ScanResult {
 
 export const importExportApi = {
   exportChannels: () => invoke<string>("export_channels"),
-  importWalicodeBackup: (content: string) =>
-    invoke<ImportResult>("import_walicode_backup", { content }),
-  importWaliapiExport: (content: string) =>
-    invoke<ImportResult>("import_waliapi_export", { content }),
+  importDamaocodeBackup: (content: string) =>
+    invoke<ImportResult>("import_damaocode_backup", { content }),
+  importDamaoapiExport: (content: string) =>
+    invoke<ImportResult>("import_damaoapi_export", { content }),
   scanLocalAiConfigs: () => invoke<ScanResult>("scan_local_ai_configs"),
   importScannedSources: (sources: ScannedSource[]) =>
     invoke<ImportResult>("import_scanned_sources", { sources }),

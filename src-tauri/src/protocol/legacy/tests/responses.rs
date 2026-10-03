@@ -61,7 +61,7 @@ fn responses_input_message_carries_reasoning_content_directly() {
 #[test]
 fn responses_reasoning_round_trip_to_chat() {
     // Simulates the full Codex repro: upstream DeepSeek streams reasoning_content,
-    // WaLiAPI emits a `reasoning` item in Responses API format, then the next
+    // DamaoAPI emits a `reasoning` item in Responses API format, then the next
     // turn's input (echoing that reasoning item) converts back to Chat with
     // `reasoning_content` so DeepSeek accepts the request.
     use crate::protocol::responses::{

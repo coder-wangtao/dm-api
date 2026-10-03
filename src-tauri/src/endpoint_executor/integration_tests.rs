@@ -2611,7 +2611,7 @@ async fn gemini_responses_non_stream_converts_through_chat() {
     assert_eq!(sent["project"], "proj-1");
     assert_eq!(
         sent["request"]["session_id"],
-        format!("waliapi-{}", account.id)
+        format!("damaoapi-{}", account.id)
     );
     assert!(sent["user_prompt_id"]
         .as_str()

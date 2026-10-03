@@ -2202,7 +2202,7 @@ async fn legacy_proxy_estimates_quota_when_upstream_omits_usage() {
     insert_channel(&pool, &ch).await;
 
     let settings = crate::settings_store::SettingsStore::file(std::env::temp_dir().join(format!(
-        "waliapi-proxy-quota-test-{}.json",
+        "damaoapi-proxy-quota-test-{}.json",
         uuid::Uuid::new_v4()
     )));
     let repo = Arc::new(Repository::new(pool.clone()));
@@ -2948,11 +2948,11 @@ async fn performance_100_channel_filter_and_grouping_bounded() {
 #[tokio::test]
 async fn drill_backup_and_restore_file_db_preserves_everything() {
     let dir = std::env::temp_dir().join(format!(
-        "wali-t10-backup-{}.db",
+        "damao-t10-backup-{}.db",
         uuid::Uuid::new_v4().simple()
     ));
     let backup_path = std::env::temp_dir().join(format!(
-        "wali-t10-backup-copy-{}.db",
+        "damao-t10-backup-copy-{}.db",
         uuid::Uuid::new_v4().simple()
     ));
     let dir_str = dir.to_str().unwrap().to_string();

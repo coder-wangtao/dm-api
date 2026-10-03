@@ -675,11 +675,11 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
 
         // ── 导入 / 导出 ──
         "export_channels" => to_json(commands::import_export::export_channels(state).await),
-        "import_walicode_backup" => to_json(
-            commands::import_export::import_walicode_backup(arg(&args, "content")?, state).await,
+        "import_damaocode_backup" => to_json(
+            commands::import_export::import_damaocode_backup(arg(&args, "content")?, state).await,
         ),
-        "import_waliapi_export" => to_json(
-            commands::import_export::import_waliapi_export(arg(&args, "content")?, state).await,
+        "import_damaoapi_export" => to_json(
+            commands::import_export::import_damaoapi_export(arg(&args, "content")?, state).await,
         ),
         "scan_local_ai_configs" => to_json(commands::import_export::scan_local_ai_configs().await),
         "import_scanned_sources" => to_json(

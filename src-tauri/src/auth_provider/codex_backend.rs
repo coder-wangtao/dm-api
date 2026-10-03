@@ -21,7 +21,7 @@ use crate::db::models::{AuthAccount, ModelState, QuotaLimit, QuotaState, QuotaWi
 pub const CODEX_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
 const RESPONSES_PATH: &str = "responses";
 const MODELS_PATH: &str = "models";
-// `/models` is a Codex client endpoint, not a WaLiAPI endpoint.  The backend
+// `/models` is a Codex client endpoint, not a DaMaoAPI endpoint.  The backend
 // filters its catalog by this value, so using our own application version (for
 // example `0.1.7`) can legitimately produce an empty model list.
 const CODEX_CLIENT_VERSION: &str = "0.147.0";
@@ -357,7 +357,7 @@ pub fn validate_backend_request(body: &Value) -> Result<Value, ProviderError> {
     // `prompt_cache_key`; it carries no request semantics the backend needs and
     // the Chat path already discards it (see `responses_codec::encode_messages`
     // DROPPED). Stripping keeps both downstream protocols behaving the same
-    // instead of rejecting Responses clients that send it (e.g. WaLiCode).
+    // instead of rejecting Responses clients that send it (e.g. DaMaoCode).
     const STRIPPED: &[&str] = &["max_output_tokens", "metadata", "prompt_cache_options"];
     for (key, value) in object {
         if !ALLOWED.contains(&key.as_str()) && !STRIPPED.contains(&key.as_str()) && !value.is_null()
@@ -925,7 +925,7 @@ mod tests {
         ));
     }
 
-    /// Regression: a real WaLiCode `/v1/responses` body (captured from
+    /// Regression: a real DaMaoCode `/v1/responses` body (captured from
     /// `request_logs`) was rejected with 400 at `/prompt_cache_options` before
     /// any network call. Every other field it sends is allowed or stripped.
     #[test]
@@ -935,7 +935,7 @@ mod tests {
             "input": "hi",
             "instructions": "you are a coding agent",
             "max_output_tokens": 32768,
-            "prompt_cache_key": "walicode-responses-v2:1dgr77u:91n97n",
+            "prompt_cache_key": "damaocode-responses-v2:1dgr77u:91n97n",
             "prompt_cache_options": {"mode": "implicit"},
             "reasoning": {"effort": "medium"},
             "stream": true,
@@ -946,7 +946,7 @@ mod tests {
         // The companion key is still forwarded; only the hint is dropped.
         assert_eq!(
             body["prompt_cache_key"],
-            "walicode-responses-v2:1dgr77u:91n97n"
+            "damaocode-responses-v2:1dgr77u:91n97n"
         );
         assert_eq!(body["reasoning"], json!({"effort": "medium"}));
         assert_eq!(body["stream"], true);

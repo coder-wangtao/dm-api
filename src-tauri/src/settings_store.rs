@@ -1,4 +1,4 @@
-//! 设置存储抽象：桌面端走 tauri-plugin-store，headless（waliapi-web）走 JSON 文件。
+//! 设置存储抽象：桌面端走 tauri-plugin-store，headless（damaoapi-web）走 JSON 文件。
 //!
 //! 两种后端共享同一套扁平点分键（如 `server.port`、`security.enabled`），
 //! 文件格式与 tauri-plugin-store 的输出一致（顶层 JSON 对象，键原样存放）。

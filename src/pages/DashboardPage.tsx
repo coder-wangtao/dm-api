@@ -400,7 +400,7 @@ export function DashboardPage() {
                   num: "2",
                   required: true,
                   title: "创建本地密钥",
-                  desc: "进入「API 密钥」页面，点击「新建密钥」生成 `sk-waliapi-*` 格式的本地访问令牌，用于下游客户端调用。",
+                  desc: "进入「API 密钥」页面，点击「新建密钥」生成 `sk-damaoapi-*` 格式的本地访问令牌，用于下游客户端调用。",
                   route: "/api-keys",
                   routeLabel: "前往 API 密钥",
                 },

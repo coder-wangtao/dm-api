@@ -287,7 +287,7 @@ export function AuthChannelsPage() {
   const [batchQuotaRefreshing, setBatchQuotaRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "card">(() => {
     try {
-      return localStorage.getItem("waliapi:auth-channel-view") === "card"
+      return localStorage.getItem("damaoapi:auth-channel-view") === "card"
         ? "card"
         : "list";
     } catch {
@@ -482,7 +482,7 @@ export function AuthChannelsPage() {
   const setAuthViewMode = (mode: "list" | "card") => {
     setViewMode(mode);
     try {
-      localStorage.setItem("waliapi:auth-channel-view", mode);
+      localStorage.setItem("damaoapi:auth-channel-view", mode);
     } catch {}
   };
 

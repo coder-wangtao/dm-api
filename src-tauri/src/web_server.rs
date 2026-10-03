@@ -1,4 +1,4 @@
-//! waliapi-web headless 启动流程：不创建 Tauri 窗口/事件循环，
+//! damaoapi-web headless 启动流程：不创建 Tauri 窗口/事件循环，
 //! 直接初始化数据库与服务状态并启动内嵌 HTTP 服务（网关 + Web 管理面板）。
 
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ pub struct WebServerConfig {
     pub data_dir: PathBuf,
 }
 
-/// 解析 headless 数据目录：显式参数 > WALIAPI_DATA_DIR > 平台默认
+/// 解析 headless 数据目录：显式参数 > DAMAOAPI_DATA_DIR > 平台默认
 /// （与桌面端 app_data_dir 一致，保证 Docker 卷数据延续）。
 pub fn resolve_data_dir(explicit: Option<String>) -> PathBuf {
     if let Some(dir) = explicit {
@@ -27,7 +27,7 @@ pub fn resolve_data_dir(explicit: Option<String>) -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    if let Ok(dir) = std::env::var("WALIAPI_DATA_DIR") {
+    if let Ok(dir) = std::env::var("DAMAOAPI_DATA_DIR") {
         let trimmed = dir.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
@@ -75,10 +75,10 @@ fn platform_default_data_dir() -> PathBuf {
 pub async fn run(cfg: WebServerConfig) -> Result<(), String> {
     // CLI 参数提升为环境变量，沿用 start_server 的 env > settings > default 优先级
     if let Some(host) = &cfg.host {
-        std::env::set_var("WALIAPI_SERVER_HOST", host);
+        std::env::set_var("DAMAOAPI_SERVER_HOST", host);
     }
     if let Some(port) = &cfg.port {
-        std::env::set_var("WALIAPI_SERVER_PORT", port.to_string());
+        std::env::set_var("DAMAOAPI_SERVER_PORT", port.to_string());
     }
 
     let data_dir = cfg.data_dir;

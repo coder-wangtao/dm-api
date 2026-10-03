@@ -115,7 +115,7 @@ fn build_router(_state: Arc<AppState>, shared: SharedState) -> Router {
         .route("/health", get(handle_health))
         .layer(cors)
         // 请求关联键：X-Request-Id 标准化（最外层，早于 CORS 之后的所有处理）——
-        // 统一解析（X-Request-Id > Wali-Trace-Id > 生成 UUIDv4）、回写请求头、响应头回显。
+        // 统一解析（X-Request-Id > Damao-Trace-Id > 生成 UUIDv4）、回写请求头、响应头回显。
         .layer(middleware::from_fn(super::request_id::middleware));
 
     let gateway_router = data_plane_router;
@@ -159,7 +159,7 @@ mod tests {
     /// 中的处理器可以真正执行（列表查询、JSON-RPC 分发）。
     pub(super) async fn test_state() -> Arc<AppState> {
         let data_dir =
-            std::env::temp_dir().join(format!("waliapi-router-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("damaoapi-router-test-{}", uuid::Uuid::new_v4()));
         let db = Arc::new(crate::db::Database::new_with_path(&data_dir).await);
         let auth_service = Arc::new(crate::auth_provider::service::AuthService::new(
             Arc::new(crate::db::repository::Repository::new(db.pool.clone())),
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_id_wali_trace_id_still_honored() {
+    async fn request_id_damao_trace_id_still_honored() {
         let state = test_state().await;
         let shared = test_shared(&state, Some(ADMIN_TOKEN), Some(MCP_TOKEN));
         let app = build_router(state, shared);
@@ -429,7 +429,7 @@ mod tests {
         let req = Request::builder()
             .method("GET")
             .uri("/health")
-            .header("wali-trace-id", "legacy-trace-7")
+            .header("damao-trace-id", "legacy-trace-7")
             .body(Body::empty())
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -438,7 +438,7 @@ mod tests {
                 .get("x-request-id")
                 .and_then(|v| v.to_str().ok()),
             Some("legacy-trace-7"),
-            "仅带旧头 Wali-Trace-Id 时应兼容采纳并以 X-Request-Id 回显"
+            "仅带旧头 Damao-Trace-Id 时应兼容采纳并以 X-Request-Id 回显"
         );
     }
 

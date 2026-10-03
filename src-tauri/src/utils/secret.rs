@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn masks_ascii_secret_keeping_head_and_tail() {
-        assert_eq!(mask_secret("sk-waliapi-abcdef1234567890"), "sk-w...7890");
+        assert_eq!(mask_secret("sk-damaoapi-abcdef1234567890"), "sk-w...7890");
     }
 
     /// 回归（FIX-23/#55 同类）：多字节字符不再按字节切片 panic。

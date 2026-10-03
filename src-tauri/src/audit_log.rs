@@ -19,7 +19,7 @@ pub const BRIEF_MESSAGE_KEEP: usize = 3;
 
 /// 「简要」截断后写回请求 JSON 顶层的标记字段，供详情面板说明省略了多少。
 /// 前导下划线避开任何厂商真实字段名。
-pub const BRIEF_MARKER_KEY: &str = "_wali_brief";
+pub const BRIEF_MARKER_KEY: &str = "_damao_brief";
 
 impl LogDetailLevel {
     pub fn parse(value: &str) -> Self {
@@ -262,7 +262,7 @@ mod tests {
 
     fn body_with_messages(count: usize) -> String {
         // 内容带填充：贴近 Agent 流量里单条消息的真实体积（工具结果常上百 KB），
-        // 否则几十字节的合成消息会被 _wali_brief 标记自身的体积吃掉，测不出省空间。
+        // 否则几十字节的合成消息会被 _damao_brief 标记自身的体积吃掉，测不出省空间。
         let items: Vec<String> = (0..count)
             .map(|i| {
                 format!(
@@ -391,7 +391,7 @@ mod tests {
     fn policy_from_settings_selects_each_level() {
         // 打通「持久化设置 → 落库策略」这条接线：单测 parse 不足以证明
         // 用户在设置页选「简要」后真的会生效。
-        let dir = std::env::temp_dir().join(format!("waliapi-logpolicy-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("damaoapi-logpolicy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = SettingsStore::file(dir.join("settings.json"));
         for (value, expect) in [

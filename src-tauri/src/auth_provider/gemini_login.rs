@@ -30,12 +30,12 @@ use super::{ProviderError, ProviderPayload, RefreshedPayload};
 // Antigravity 桌面端 OAuth client 为 confidential 类型：令牌交换必须携带
 // client_secret（Google 返回 400 invalid_request "client_secret is missing."）。
 // client_secret 属于敏感凭据，仓库与安装包均不内置，由部署方在运行时通过
-// 环境变量 `WALIAPI_ANTIGRAVITY_CLIENT_SECRET` 注入；未注入时不携带该字段。
+// 环境变量 `DAMAOAPI_ANTIGRAVITY_CLIENT_SECRET` 注入；未注入时不携带该字段。
 // 用户点击登录即可进入浏览器授权；client ID 亦可经环境变量覆盖。
 pub const ANTIGRAVITY_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-pub const ANTIGRAVITY_CLIENT_ID_ENV: &str = "WALIAPI_ANTIGRAVITY_CLIENT_ID";
-pub const ANTIGRAVITY_CLIENT_SECRET_ENV: &str = "WALIAPI_ANTIGRAVITY_CLIENT_SECRET";
+pub const ANTIGRAVITY_CLIENT_ID_ENV: &str = "DAMAOAPI_ANTIGRAVITY_CLIENT_ID";
+pub const ANTIGRAVITY_CLIENT_SECRET_ENV: &str = "DAMAOAPI_ANTIGRAVITY_CLIENT_SECRET";
 pub const GOOGLE_OAUTH_AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 pub const ANTIGRAVITY_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -298,7 +298,7 @@ enum RefreshError {
 }
 
 // 不使用 PKCE 是为了匹配已验证的 Antigravity client contract，并非遗漏安全参数；
-// state 仍由 WaLiAPI 本地生成并严格校验。
+// state 仍由 DaMaoAPI 本地生成并严格校验。
 fn authorization_url(authorize: &str, client_id: &str, redirect_uri: &str, state: &str) -> String {
     let mut url = reqwest::Url::parse(authorize).expect("configured authorize URL");
     url.query_pairs_mut()
@@ -445,17 +445,17 @@ async fn oauth_callback(
         (Some(_), _) => (
             Err(ProviderError::AuthorizationDenied),
             StatusCode::BAD_REQUEST,
-            "Antigravity authorization was denied. Return to WaLiAPI for details.",
+            "Antigravity authorization was denied. Return to DaMaoAPI for details.",
         ),
         (None, Some(code)) if !code.is_empty() => (
             Ok(code),
             StatusCode::OK,
-            "Antigravity authorization received. WaLiAPI is completing sign-in; return to the app.",
+            "Antigravity authorization received. DaMaoAPI is completing sign-in; return to the app.",
         ),
         _ => (
             Err(ProviderError::CallbackFailed),
             StatusCode::BAD_REQUEST,
-            "Antigravity authorization callback is incomplete. Return to WaLiAPI and retry.",
+            "Antigravity authorization callback is incomplete. Return to DaMaoAPI and retry.",
         ),
     };
     if let Some(sender) = callback.sender.lock().await.take() {
@@ -730,7 +730,7 @@ mod tests {
     }
 
     // client_secret 不再内置：Google 令牌端点要求 Antigravity confidential
-    // client 携带 client_secret，部署方需通过 WALIAPI_ANTIGRAVITY_CLIENT_SECRET
+    // client 携带 client_secret，部署方需通过 DAMAOAPI_ANTIGRAVITY_CLIENT_SECRET
     // 在运行时注入；未注入时不携带该字段（token exchange 返回 400）。
     #[test]
     fn default_client_secret_comes_from_runtime_env() {

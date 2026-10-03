@@ -39,7 +39,7 @@ const APP_ICONS: Record<string, React.ComponentType<{ size?: number; className?:
   "opencode": Wrench,
   "openclaw": Bot,
   "hermes": Code2,
-  "walicode": Code2,
+  "damaocode": Code2,
 };
 
 export function getAppIcon(name: string) {
@@ -61,8 +61,8 @@ export function AppConfigPanel({ appName }: { appName: string }) {
   const [loading, setLoading] = useState(true);
 
   // Storage key for persisting model selection per app
-  const modelStorageKey = `waliapi:codex-model:${appName}`;
-  const keyStorageKey = `waliapi:codex-key:${appName}`;
+  const modelStorageKey = `damaoapi:codex-model:${appName}`;
+  const keyStorageKey = `damaoapi:codex-key:${appName}`;
   const [applying, setApplying] = useState(false);
   const [appliedResult, setAppliedResult] = useState<{ success: boolean; message: string; authWarning?: string | null } | null>(null);
   const [resultKind, setResultKind] = useState<"apply" | "clear" | "reset">("apply");

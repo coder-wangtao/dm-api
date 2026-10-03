@@ -316,7 +316,7 @@ pub struct ApiKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateApiKeyInput {
     pub name: String,
-    /// 可选自定义密钥。留空则自动生成 sk-waliapi-<uuid>。
+    /// 可选自定义密钥。留空则自动生成 sk-damaoapi-<uuid>。
     #[serde(default)]
     pub key: Option<String>,
     pub allowed_models: Option<Vec<String>>,

@@ -877,7 +877,7 @@ impl Repository {
             Some(custom) => {
                 let trimmed = custom.trim();
                 if trimmed.is_empty() {
-                    format!("sk-waliapi-{}", uuid::Uuid::new_v4().simple())
+                    format!("sk-damaoapi-{}", uuid::Uuid::new_v4().simple())
                 } else {
                     // 校验格式：只允许字母、数字、连字符、下划线
                     if !trimmed
@@ -908,7 +908,7 @@ impl Repository {
                     trimmed.to_string()
                 }
             }
-            None => format!("sk-waliapi-{}", uuid::Uuid::new_v4().simple()),
+            None => format!("sk-damaoapi-{}", uuid::Uuid::new_v4().simple()),
         };
         let allowed_models =
             serde_json::to_string(&input.allowed_models.clone().unwrap_or_default())

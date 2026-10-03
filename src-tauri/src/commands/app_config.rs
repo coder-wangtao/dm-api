@@ -55,7 +55,7 @@ struct AppDef {
 }
 
 fn home_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("WALIAPI_TARGET_HOME") {
+    if let Ok(path) = std::env::var("DAMAOAPI_TARGET_HOME") {
         let path = path.trim();
         if !path.is_empty() {
             return PathBuf::from(path);
@@ -156,18 +156,18 @@ const APPS: &[AppDef] = &[
         check_installed_fn: |dir| dir.exists(),
     },
     AppDef {
-        name: "walicode",
-        label: "WaLiCode",
+        name: "damaocode",
+        label: "DaMaoCode",
         icon: "code",
         description: "AI Coding Assistant，写入 ai_settings.json 中的 provider 和 apiKey 配置",
-        config_format: "JSON (~/Library/Application Support/WaLiCode/ai_settings.json)",
-        download_url: "https://walicode.xiaofuge.cn/",
+        config_format: "JSON (~/Library/Application Support/DaMaoCode/ai_settings.json)",
+        download_url: "https://damaocode.xiaofuge.cn/",
         #[cfg(target_os = "macos")]
-        config_dir_fn: || home_dir().join("Library/Application Support/WaLiCode"),
+        config_dir_fn: || home_dir().join("Library/Application Support/DaMaoCode"),
         #[cfg(target_os = "windows")]
-        config_dir_fn: || home_dir().join("AppData/Roaming/WaLiCode"),
+        config_dir_fn: || home_dir().join("AppData/Roaming/DaMaoCode"),
         #[cfg(target_os = "linux")]
-        config_dir_fn: || home_dir().join(".config/walicode"),
+        config_dir_fn: || home_dir().join(".config/damaocode"),
         config_file: "ai_settings.json",
         check_installed_fn: |dir| dir.exists(),
     },
@@ -295,7 +295,7 @@ fn backup_path(config_path: &PathBuf) -> PathBuf {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    name.push_str(".waliapi-backup");
+    name.push_str(".damaoapi-backup");
     config_path.with_file_name(name)
 }
 
@@ -314,7 +314,7 @@ fn absent_marker_path(config_path: &PathBuf) -> PathBuf {
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    name.push_str(".waliapi-absent");
+    name.push_str(".damaoapi-absent");
     config_path.with_file_name(name)
 }
 
@@ -339,10 +339,10 @@ fn restore_config(config_path: &PathBuf) -> Result<(), String> {
     }
 }
 
-// ── 获取 WaLiAPI 网关信息 ──
+// ── 获取 DaMaoAPI 网关信息 ──
 
-async fn get_waliapi_url(state: &Arc<AppState>) -> String {
-    if let Ok(public_url) = std::env::var("WALIAPI_PUBLIC_URL") {
+async fn get_damaoapi_url(state: &Arc<AppState>) -> String {
+    if let Ok(public_url) = std::env::var("DAMAOAPI_PUBLIC_URL") {
         let public_url = public_url.trim().trim_end_matches('/');
         if !public_url.is_empty() {
             return public_url.to_string();
@@ -353,7 +353,7 @@ async fn get_waliapi_url(state: &Arc<AppState>) -> String {
 }
 
 #[allow(dead_code)]
-fn get_waliapi_key(state: &Arc<AppState>) -> Result<String, String> {
+fn get_damaoapi_key(state: &Arc<AppState>) -> Result<String, String> {
     let repo = Repository::new(state.db.pool.clone());
     let keys = tokio::task::block_in_place(|| {
         tauri::async_runtime::handle().block_on(async { repo.get_all_api_keys().await })
@@ -372,8 +372,8 @@ fn get_waliapi_key(state: &Arc<AppState>) -> Result<String, String> {
 /// 备份/缺失标记，更不会触碰用户的原文件。
 fn write_claude_code_transactional(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let settings_path = config_dir.join("settings.json");
@@ -387,7 +387,7 @@ fn write_claude_code_transactional(
         None => serde_json::json!({}),
     };
 
-    apply_waliapi_claude_code_settings(&mut settings, waliapi_url, waliapi_key, model)?;
+    apply_damaoapi_claude_code_settings(&mut settings, damaoapi_url, damaoapi_key, model)?;
     let json = to_pretty_json(&settings).map_err(|e| format!("序列化 JSON 失败: {e}"))?;
 
     // 只有所有校验均通过后才接触恢复资料；已有备份永远代表首次应用前的原始字节。
@@ -424,7 +424,7 @@ fn write_claude_code_transactional(
 /// GPT-5.6 目录，已知 gpt-5.6 系列在 Claude Code 网关场景应声明为 372K。
 const CLAUDE_CODE_GPT_56_CONTEXT_TOKENS: &str = "372000";
 const CLAUDE_CODE_GPT_56_AUTO_COMPACT_TOKENS: &str = "360000";
-const WALIAPI_CLAUDE_SETTINGS_META: &str = "_waliapi_claude_code";
+const DAMAOAPI_CLAUDE_SETTINGS_META: &str = "_damaoapi_claude_code";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ClaudeCodeModelCompatibility {
@@ -459,12 +459,12 @@ fn claude_code_model_compatibility(model: &str) -> ClaudeCodeModelCompatibility 
     }
 }
 
-fn waliapi_managed_string_array(
+fn damaoapi_managed_string_array(
     settings: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Vec<String> {
     settings
-        .get(WALIAPI_CLAUDE_SETTINGS_META)
+        .get(DAMAOAPI_CLAUDE_SETTINGS_META)
         .and_then(|value| value.get(key))
         .and_then(serde_json::Value::as_array)
         .map(|values| {
@@ -484,31 +484,31 @@ fn secret_fingerprint(value: &str) -> String {
         .collect()
 }
 
-fn is_legacy_waliapi_settings(root: &serde_json::Map<String, serde_json::Value>) -> bool {
-    root.get("_waliapi").and_then(serde_json::Value::as_bool) == Some(true)
-        && !root.contains_key(WALIAPI_CLAUDE_SETTINGS_META)
+fn is_legacy_damaoapi_settings(root: &serde_json::Map<String, serde_json::Value>) -> bool {
+    root.get("_damaoapi").and_then(serde_json::Value::as_bool) == Some(true)
+        && !root.contains_key(DAMAOAPI_CLAUDE_SETTINGS_META)
 }
 
-/// 将 WaLiAPI 所有的字段投影到 Claude Code settings。settings.json 同时属于
+/// 将 DaMaoAPI 所有的字段投影到 Claude Code settings。settings.json 同时属于
 /// Claude Code 和用户，绝不能为了更新网关而整体替换 env 或 modelPicker。
-fn apply_waliapi_claude_code_settings(
+fn apply_damaoapi_claude_code_settings(
     settings: &mut serde_json::Value,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let root = settings.as_object_mut().ok_or_else(|| {
         "Claude Code settings.json 必须是 JSON 对象，已取消写入以保护原配置".to_string()
     })?;
 
-    let previously_managed_env = waliapi_managed_string_array(root, "managedEnvKeys");
-    let previously_managed_picker_models = waliapi_managed_string_array(root, "modelPickerModels");
+    let previously_managed_env = damaoapi_managed_string_array(root, "managedEnvKeys");
+    let previously_managed_picker_models = damaoapi_managed_string_array(root, "modelPickerModels");
     let previous_auth_fingerprint = root
-        .get(WALIAPI_CLAUDE_SETTINGS_META)
+        .get(DAMAOAPI_CLAUDE_SETTINGS_META)
         .and_then(|m| m.get("managedAuthFingerprint"))
         .and_then(|f| f.as_str())
         .map(ToOwned::to_owned);
-    let legacy_settings = is_legacy_waliapi_settings(root);
+    let legacy_settings = is_legacy_damaoapi_settings(root);
 
     let env = root
         .entry("env".to_string())
@@ -523,11 +523,11 @@ fn apply_waliapi_claude_code_settings(
     // 阻止写入，避免覆盖用户自己的 Anthropic 配置。
     for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
         if let Some(value) = env.get(key) {
-            let is_target_key = value.as_str() == Some(waliapi_key);
+            let is_target_key = value.as_str() == Some(damaoapi_key);
             let is_managed = previously_managed_env.iter().any(|managed| managed == key);
             if !is_target_key && !is_managed {
                 return Err(format!(
-                    "Claude Code 已存在非 WaLiAPI 管理的 {key}；为保护现有凭证未写入。请先在 settings.json 中移除或手动选择一种认证方式"
+                    "Claude Code 已存在非 DaMaoAPI 管理的 {key}；为保护现有凭证未写入。请先在 settings.json 中移除或手动选择一种认证方式"
                 ));
             }
             if key == "ANTHROPIC_API_KEY" && is_managed && !is_target_key {
@@ -548,15 +548,15 @@ fn apply_waliapi_claude_code_settings(
     // 仅替换本次网关需要的字段；其余用户环境变量（包括企业代理和自定义模型）原样保留。
     env.insert(
         "ANTHROPIC_BASE_URL".to_string(),
-        serde_json::Value::String(waliapi_url.trim().trim_end_matches('/').to_string()),
+        serde_json::Value::String(damaoapi_url.trim().trim_end_matches('/').to_string()),
     );
     env.insert(
         "ANTHROPIC_AUTH_TOKEN".to_string(),
-        serde_json::Value::String(waliapi_key.to_string()),
+        serde_json::Value::String(damaoapi_key.to_string()),
     );
     env.remove("ANTHROPIC_API_KEY");
     // 受管模型环境变量不应覆盖 Claude Code 的 /model 持久化选择。仅删除由
-    // WaLiAPI 以前写入的值或 legacy 配置中的值；用户自行设置的覆盖原样保留。
+    // DaMaoAPI 以前写入的值或 legacy 配置中的值；用户自行设置的覆盖原样保留。
     if previously_managed_env
         .iter()
         .any(|managed| managed == "ANTHROPIC_MODEL")
@@ -605,7 +605,7 @@ fn apply_waliapi_claude_code_settings(
             .and_then(serde_json::Value::as_array_mut)
             .ok_or_else(|| "Claude Code settings.json 的 modelPicker.options 必须是数组，已取消写入以保护原配置".to_string())?;
 
-        // 仅删除此前由 WaLiAPI 加入的行，随后为当前模型写入一条最小兼容行。
+        // 仅删除此前由 DaMaoAPI 加入的行，随后为当前模型写入一条最小兼容行。
         options.retain(|option| {
             let option_model = option.get("model").and_then(serde_json::Value::as_str);
             !option_model.is_some_and(|option_model| {
@@ -623,7 +623,7 @@ fn apply_waliapi_claude_code_settings(
             options.push(serde_json::json!({
                 "model": model.trim(),
                 "label": model.trim(),
-                "description": "由 WaLiAPI 网关提供",
+                "description": "由 DaMaoAPI 网关提供",
                 "behavesAs": compatibility.behaves_as.expect("checked above")
             }));
             managed_picker_models.push(model.trim().to_string());
@@ -634,15 +634,15 @@ fn apply_waliapi_claude_code_settings(
         "model".to_string(),
         serde_json::Value::String(model.trim().to_string()),
     );
-    root.insert("_waliapi".to_string(), serde_json::json!(true));
+    root.insert("_damaoapi".to_string(), serde_json::json!(true));
     root.insert(
-        WALIAPI_CLAUDE_SETTINGS_META.to_string(),
+        DAMAOAPI_CLAUDE_SETTINGS_META.to_string(),
         serde_json::json!({
             "version": 3,
             "managedEnvKeys": managed_env_keys,
             "modelPickerModels": managed_picker_models,
             "managedTopLevelFields": ["model"],
-            "managedAuthFingerprint": secret_fingerprint(waliapi_key),
+            "managedAuthFingerprint": secret_fingerprint(damaoapi_key),
             "modelCompatibility": {
                 "model": model.trim(),
                 "source": compatibility.source,
@@ -655,8 +655,8 @@ fn apply_waliapi_claude_code_settings(
 
 fn write_codex(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     use toml_edit::DocumentMut;
@@ -678,7 +678,7 @@ fn write_codex(
         .map_err(|e| format!("Failed to parse config.toml: {e}"))?;
 
     // Set model_provider and model at top level
-    doc["model_provider"] = toml_edit::value("waliapi");
+    doc["model_provider"] = toml_edit::value("damaoapi");
     doc["model"] = toml_edit::value(model);
 
     // Ensure [model_providers] table exists
@@ -688,18 +688,18 @@ fn write_codex(
         doc["model_providers"] = toml_edit::Item::Table(table);
     }
 
-    // Insert/update [model_providers.waliapi] preserving other providers
+    // Insert/update [model_providers.damaoapi] preserving other providers
     if let Some(providers) = doc["model_providers"].as_table_mut() {
-        let waliapi_entry = providers.entry("waliapi");
+        let damaoapi_entry = providers.entry("damaoapi");
         let provider_table =
-            waliapi_entry.or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+            damaoapi_entry.or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if let Some(table) = provider_table.as_table_mut() {
-            table["name"] = toml_edit::value("WaLiAPI Gateway");
+            table["name"] = toml_edit::value("DaMaoAPI Gateway");
             table["base_url"] =
-                toml_edit::value(format!("{}/v1", waliapi_url.trim_end_matches('/')));
+                toml_edit::value(format!("{}/v1", damaoapi_url.trim_end_matches('/')));
             table["wire_api"] = toml_edit::value("responses");
-            table["experimental_bearer_token"] = toml_edit::value(waliapi_key);
-            // Ensure requires_openai_auth is NOT set for waliapi provider
+            table["experimental_bearer_token"] = toml_edit::value(damaoapi_key);
+            // Ensure requires_openai_auth is NOT set for damaoapi provider
             // This prevents Codex from trying to validate the token with OpenAI
             table.remove("requires_openai_auth");
         }
@@ -754,7 +754,7 @@ fn detect_codex_apikey_mode(config_dir: &PathBuf) -> Option<String> {
 
 /// 将 Codex auth.json 重置为 ChatGPT 登录模式。
 ///
-/// 原 auth.json 备份为 `~/.codex/auth.json.waliapi-backup`；重置后用户需运行
+/// 原 auth.json 备份为 `~/.codex/auth.json.damaoapi-backup`；重置后用户需运行
 /// `codex login` 重新完成 ChatGPT 授权（官方推荐的退出 API Key 模式流程）。
 #[tauri::command]
 pub async fn reset_codex_auth() -> Result<ApplyResult, String> {
@@ -775,7 +775,7 @@ fn reset_codex_auth_in(config_dir: &PathBuf) -> Result<ApplyResult, String> {
 
     let content = fs::read(&auth_path).map_err(|e| format!("读取 auth.json 失败: {e}"))?;
     atomic_write(
-        &auth_path.with_file_name("auth.json.waliapi-backup"),
+        &auth_path.with_file_name("auth.json.damaoapi-backup"),
         &content,
     )?;
 
@@ -789,21 +789,21 @@ fn reset_codex_auth_in(config_dir: &PathBuf) -> Result<ApplyResult, String> {
 
     Ok(ApplyResult {
         success: true,
-        message: "已重置 auth.json 为 ChatGPT 登录模式（原文件备份为 ~/.codex/auth.json.waliapi-backup）。请重启 Codex 并运行 codex login 完成登录".to_string(),
+        message: "已重置 auth.json 为 ChatGPT 登录模式（原文件备份为 ~/.codex/auth.json.damaoapi-backup）。请重启 Codex 并运行 codex login 完成登录".to_string(),
         auth_warning: None,
     })
 }
 
 fn write_gemini_cli(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let env_path = config_dir.join(".env");
     let env_content = format!(
-        "# Generated by WaLiAPI\nGEMINI_API_KEY={}\nGEMINI_BASE_URL={}\nGEMINI_MODEL={}\n",
-        waliapi_key, waliapi_url, model
+        "# Generated by DaMaoAPI\nGEMINI_API_KEY={}\nGEMINI_BASE_URL={}\nGEMINI_MODEL={}\n",
+        damaoapi_key, damaoapi_url, model
     );
     atomic_write(&env_path, env_content.as_bytes())?;
 
@@ -816,8 +816,8 @@ fn write_gemini_cli(
 
 fn write_claude_desktop(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let config_path = config_dir.join("claude_desktop_config.json");
@@ -830,11 +830,11 @@ fn write_claude_desktop(
     if let Some(obj) = config.as_object_mut() {
         obj.insert(
             "apiKeyHelper".to_string(),
-            serde_json::json!(format!("echo '{}'", waliapi_key)),
+            serde_json::json!(format!("echo '{}'", damaoapi_key)),
         );
-        obj.insert("apiBaseUrl".to_string(), serde_json::json!(waliapi_url));
+        obj.insert("apiBaseUrl".to_string(), serde_json::json!(damaoapi_url));
         obj.insert("defaultModel".to_string(), serde_json::json!(model));
-        obj.insert("_waliapi".to_string(), serde_json::json!(true));
+        obj.insert("_damaoapi".to_string(), serde_json::json!(true));
     }
 
     write_json_file(&config_path, &config)
@@ -842,8 +842,8 @@ fn write_claude_desktop(
 
 fn write_opencode(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let config_path = config_dir.join("opencode.json");
@@ -856,21 +856,21 @@ fn write_opencode(
     if let Some(obj) = config.as_object_mut() {
         let provider = serde_json::json!({
             "npm": "@ai-sdk/openai-compatible",
-            "name": "WaLiAPI Gateway",
+            "name": "DaMaoAPI Gateway",
             "options": {
-                "baseURL": format!("{}/v1", waliapi_url),
-                "apiKey": waliapi_key
+                "baseURL": format!("{}/v1", damaoapi_url),
+                "apiKey": damaoapi_key
             },
             "models": {
-                "waliapi-default": { "name": model }
+                "damaoapi-default": { "name": model }
             }
         });
         if let Some(providers) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
-            providers.insert("waliapi".to_string(), provider);
+            providers.insert("damaoapi".to_string(), provider);
         } else {
             obj.insert(
                 "provider".to_string(),
-                serde_json::json!({"waliapi": provider}),
+                serde_json::json!({"damaoapi": provider}),
             );
         }
     }
@@ -880,8 +880,8 @@ fn write_opencode(
 
 fn write_openclaw(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let config_path = config_dir.join("config.json");
@@ -894,11 +894,11 @@ fn write_openclaw(
     if let Some(obj) = config.as_object_mut() {
         obj.insert(
             "baseUrl".to_string(),
-            serde_json::json!(format!("{}/v1", waliapi_url)),
+            serde_json::json!(format!("{}/v1", damaoapi_url)),
         );
-        obj.insert("apiKey".to_string(), serde_json::json!(waliapi_key));
+        obj.insert("apiKey".to_string(), serde_json::json!(damaoapi_key));
         obj.insert("model".to_string(), serde_json::json!(model));
-        obj.insert("_waliapi".to_string(), serde_json::json!(true));
+        obj.insert("_damaoapi".to_string(), serde_json::json!(true));
     }
 
     write_json_file(&config_path, &config)
@@ -906,8 +906,8 @@ fn write_openclaw(
 
 fn write_hermes(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
     let config_path = config_dir.join("config.json");
@@ -922,26 +922,26 @@ fn write_hermes(
             .get_mut("custom_providers")
             .and_then(|v| v.as_array_mut())
         {
-            providers.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some("waliapi"));
+            providers.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some("damaoapi"));
             let mut entry = serde_json::Map::new();
-            entry.insert("id".to_string(), serde_json::json!("waliapi"));
-            entry.insert("name".to_string(), serde_json::json!("WaLiAPI Gateway"));
+            entry.insert("id".to_string(), serde_json::json!("damaoapi"));
+            entry.insert("name".to_string(), serde_json::json!("DaMaoAPI Gateway"));
             entry.insert(
                 "base_url".to_string(),
-                serde_json::json!(format!("{}/v1", waliapi_url)),
+                serde_json::json!(format!("{}/v1", damaoapi_url)),
             );
-            entry.insert("api_key".to_string(), serde_json::json!(waliapi_key));
+            entry.insert("api_key".to_string(), serde_json::json!(damaoapi_key));
             entry.insert("default_model".to_string(), serde_json::json!(model));
             providers.push(serde_json::Value::Object(entry));
         } else {
             let mut entry = serde_json::Map::new();
-            entry.insert("id".to_string(), serde_json::json!("waliapi"));
-            entry.insert("name".to_string(), serde_json::json!("WaLiAPI Gateway"));
+            entry.insert("id".to_string(), serde_json::json!("damaoapi"));
+            entry.insert("name".to_string(), serde_json::json!("DaMaoAPI Gateway"));
             entry.insert(
                 "base_url".to_string(),
-                serde_json::json!(format!("{}/v1", waliapi_url)),
+                serde_json::json!(format!("{}/v1", damaoapi_url)),
             );
-            entry.insert("api_key".to_string(), serde_json::json!(waliapi_key));
+            entry.insert("api_key".to_string(), serde_json::json!(damaoapi_key));
             entry.insert("default_model".to_string(), serde_json::json!(model));
             obj.insert(
                 "custom_providers".to_string(),
@@ -953,23 +953,23 @@ fn write_hermes(
     write_json_file(&config_path, &config)
 }
 
-fn write_walicode(
+fn write_damaocode(
     config_dir: &PathBuf,
-    waliapi_url: &str,
-    waliapi_key: &str,
+    damaoapi_url: &str,
+    damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
-    let base_url = format!("{}/v1", waliapi_url.trim_end_matches('/'));
+    let base_url = format!("{}/v1", damaoapi_url.trim_end_matches('/'));
 
-    // WaLiCode 有两个可能的配置路径：
-    //   1. 标准路径 ~/.config/walicode/ai_settings.json (settings_write_path 写入位置)
-    //   2. 旧版路径 ~/Library/Application Support/WaLiCode/ai_settings.json (legacy)
-    // WaLiCode 读取时优先查标准路径，fallback 到旧路径
+    // DaMaoCode 有两个可能的配置路径：
+    //   1. 标准路径 ~/.config/damaocode/ai_settings.json (settings_write_path 写入位置)
+    //   2. 旧版路径 ~/Library/Application Support/DaMaoCode/ai_settings.json (legacy)
+    // DaMaoCode 读取时优先查标准路径，fallback 到旧路径
     // 我们需要同时写入两个路径，确保不管走哪个都能读到
 
     let standard_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("walicode");
+        .join("damaocode");
     let paths_to_write: Vec<PathBuf> = if *config_dir == standard_dir {
         vec![standard_dir.join("ai_settings.json")]
     } else {
@@ -995,7 +995,7 @@ fn write_walicode(
     let mut config = existing_config;
 
     if let Some(obj) = config.as_object_mut() {
-        // 在 customProviders 数组中查找或创建 waliapi provider
+        // 在 customProviders 数组中查找或创建 damaoapi provider
         let providers = obj
             .entry("customProviders".to_string())
             .or_insert_with(|| serde_json::json!([]));
@@ -1003,9 +1003,9 @@ fn write_walicode(
         let mut found = false;
         if let Some(arr) = providers.as_array_mut() {
             for p in arr.iter_mut() {
-                if p.get("id").and_then(|v| v.as_str()) == Some("waliapi") {
-                    p["name"] = serde_json::json!("WaLiAPI");
-                    p["apiKey"] = serde_json::json!(waliapi_key);
+                if p.get("id").and_then(|v| v.as_str()) == Some("damaoapi") {
+                    p["name"] = serde_json::json!("DaMaoAPI");
+                    p["apiKey"] = serde_json::json!(damaoapi_key);
                     p["baseUrl"] = serde_json::json!(&base_url);
                     p["model"] = serde_json::json!(model);
                     p["apiFormat"] = serde_json::json!("openai");
@@ -1029,9 +1029,9 @@ fn write_walicode(
 
             if !found {
                 arr.push(serde_json::json!({
-                    "id": "waliapi",
-                    "name": "WaLiAPI",
-                    "apiKey": waliapi_key,
+                    "id": "damaoapi",
+                    "name": "DaMaoAPI",
+                    "apiKey": damaoapi_key,
                     "baseUrl": base_url,
                     "model": model,
                     "customModels": [model],
@@ -1041,19 +1041,19 @@ fn write_walicode(
             }
         }
 
-        // 激活 waliapi provider
+        // 激活 damaoapi provider
         obj.insert(
             "activeCustomProviderId".to_string(),
-            serde_json::json!("waliapi"),
+            serde_json::json!("damaoapi"),
         );
         // providerType 必须设为 custom，否则前端不会走 custom provider 分支
         obj.insert("providerType".to_string(), serde_json::json!("custom"));
         obj.insert("provider".to_string(), serde_json::json!("openai"));
         // 同步顶级字段（CLI resolve_effective_settings 的 fallback）
-        obj.insert("apiKey".to_string(), serde_json::json!(waliapi_key));
+        obj.insert("apiKey".to_string(), serde_json::json!(damaoapi_key));
         obj.insert("baseUrl".to_string(), serde_json::json!(&base_url));
         obj.insert("model".to_string(), serde_json::json!(model));
-        obj.insert("_waliapi".to_string(), serde_json::json!(true));
+        obj.insert("_damaoapi".to_string(), serde_json::json!(true));
     }
 
     // 写入所有目标路径
@@ -1079,7 +1079,7 @@ fn write_walicode(
     }
 }
 
-// ── 检测是否已由 WaLiAPI 配置 ──
+// ── 检测是否已由 DaMaoAPI 配置 ──
 
 fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
     if !config_path.exists() {
@@ -1098,30 +1098,30 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
             };
             if app_name == "claude-code" {
                 let managed = v
-                    .get(WALIAPI_CLAUDE_SETTINGS_META)
+                    .get(DAMAOAPI_CLAUDE_SETTINGS_META)
                     .and_then(|m| m.get("version"))
                     .and_then(|n| n.as_u64())
                     .is_some_and(|version| version >= 3);
                 let env = v.get("env").and_then(|e| e.as_object());
                 managed
-                    && v.get("_waliapi").and_then(|x| x.as_bool()) == Some(true)
+                    && v.get("_damaoapi").and_then(|x| x.as_bool()) == Some(true)
                     && env
                         .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
                         .and_then(|x| x.as_str())
                         .is_some_and(|s| !s.is_empty())
                     && env.and_then(|e| e.get("ANTHROPIC_API_KEY")).is_none()
             } else {
-                v.get("_waliapi").and_then(|v| v.as_bool()).unwrap_or(false)
+                v.get("_damaoapi").and_then(|v| v.as_bool()).unwrap_or(false)
             }
         }
-        "codex" => content.contains("WaLiAPI") || content.contains("waliapi"),
-        "gemini-cli" => content.contains("WaLiAPI"),
+        "codex" => content.contains("DaMaoAPI") || content.contains("damaoapi"),
+        "gemini-cli" => content.contains("DaMaoAPI"),
         "opencode" => {
             let v: serde_json::Value = match serde_json::from_str(&content) {
                 Ok(v) => v,
                 Err(_) => return false,
             };
-            v.pointer("/provider/waliapi").is_some()
+            v.pointer("/provider/damaoapi").is_some()
         }
         "hermes" => {
             let v: serde_json::Value = match serde_json::from_str(&content) {
@@ -1132,15 +1132,15 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
                 .and_then(|v| v.as_array())
                 .and_then(|arr| {
                     arr.iter()
-                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some("waliapi"))
+                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some("damaoapi"))
                 })
                 .is_some()
         }
-        "walicode" => {
+        "damaocode" => {
             // 检查两个可能的路径：旧路径（config_path）和标准路径
             let standard_path = dirs::config_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("walicode")
+                .join("damaocode")
                 .join("ai_settings.json");
             let check_path = if standard_path.exists() {
                 &standard_path
@@ -1158,17 +1158,17 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
                 Ok(v) => v,
                 Err(_) => return false,
             };
-            // 检查 customProviders 中有 waliapi 且已激活
+            // 检查 customProviders 中有 damaoapi 且已激活
             let has_provider = v
                 .get("customProviders")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| {
                     arr.iter()
-                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some("waliapi"))
+                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some("damaoapi"))
                 })
                 .is_some();
             let is_active =
-                v.get("activeCustomProviderId").and_then(|v| v.as_str()) == Some("waliapi");
+                v.get("activeCustomProviderId").and_then(|v| v.as_str()) == Some("damaoapi");
             has_provider && is_active
         }
         _ => false,
@@ -1226,7 +1226,7 @@ pub async fn apply_app_config_impl(
     model: &str,
     state: &Arc<AppState>,
 ) -> Result<ApplyResult, String> {
-    let waliapi_url = get_waliapi_url(state).await;
+    let damaoapi_url = get_damaoapi_url(state).await;
 
     let app_def = APPS
         .iter()
@@ -1237,7 +1237,7 @@ pub async fn apply_app_config_impl(
     let config_path = config_dir.join(app_def.config_file);
 
     // 仅在「未应用」状态下备份：避免重复写入时把已被修改的配置当成原始配置覆盖备份，
-    // 否则「恢复原配置」会恢复成 waliapi 配置，永远切不回去。
+    // 否则「恢复原配置」会恢复成 damaoapi 配置，永远切不回去。
     if app_name == "claude-code" {
         // Claude Code 在事务写入器中完成读取、校验、首次备份和原子替换；
         // 外层不能提前创建备份，否则冲突失败会误消费原始备份。
@@ -1254,15 +1254,15 @@ pub async fn apply_app_config_impl(
 
     let result = match app_name {
         "claude-code" => {
-            write_claude_code_transactional(&config_dir, &waliapi_url, &api_key, &model)
+            write_claude_code_transactional(&config_dir, &damaoapi_url, &api_key, &model)
         }
-        "codex" => write_codex(&config_dir, &waliapi_url, &api_key, &model),
-        "gemini-cli" => write_gemini_cli(&config_dir, &waliapi_url, &api_key, &model),
-        "claude-desktop" => write_claude_desktop(&config_dir, &waliapi_url, &api_key, &model),
-        "opencode" => write_opencode(&config_dir, &waliapi_url, &api_key, &model),
-        "openclaw" => write_openclaw(&config_dir, &waliapi_url, &api_key, &model),
-        "hermes" => write_hermes(&config_dir, &waliapi_url, &api_key, &model),
-        "walicode" => write_walicode(&config_dir, &waliapi_url, &api_key, &model),
+        "codex" => write_codex(&config_dir, &damaoapi_url, &api_key, &model),
+        "gemini-cli" => write_gemini_cli(&config_dir, &damaoapi_url, &api_key, &model),
+        "claude-desktop" => write_claude_desktop(&config_dir, &damaoapi_url, &api_key, &model),
+        "opencode" => write_opencode(&config_dir, &damaoapi_url, &api_key, &model),
+        "openclaw" => write_openclaw(&config_dir, &damaoapi_url, &api_key, &model),
+        "hermes" => write_hermes(&config_dir, &damaoapi_url, &api_key, &model),
+        "damaocode" => write_damaocode(&config_dir, &damaoapi_url, &api_key, &model),
         _ => return Err(format!("不支持的应用: {app_name}")),
     };
 
@@ -1270,12 +1270,12 @@ pub async fn apply_app_config_impl(
         Ok(()) => {
             let msg = if app_name == "claude-code" {
                 format!(
-                    "WaLiAPI 网关配置已写入 {}。Claude Code 的 API Key 网关不要求 Anthropic 账户登录或执行 /login，请重启 Claude Code 生效",
+                    "DaMaoAPI 网关配置已写入 {}。Claude Code 的 API Key 网关不要求 Anthropic 账户登录或执行 /login，请重启 Claude Code 生效",
                     config_path.display()
                 )
-            } else if app_name == "walicode" {
+            } else if app_name == "damaocode" {
                 format!(
-                    "配置已写入。请重启 WaLiCode 使配置生效（WaLiCode 会使用本地缓存覆盖旧配置）"
+                    "配置已写入。请重启 DaMaoCode 使配置生效（DaMaoCode 会使用本地缓存覆盖旧配置）"
                 )
             } else {
                 format!("配置已写入 {}", config_path.display())
@@ -1354,11 +1354,11 @@ pub async fn get_app_config_content_impl(app_name: &str) -> Result<ConfigContent
     let config_dir = (app_def.config_dir_fn)();
     let config_path = config_dir.join(app_def.config_file);
 
-    // WaLiCode 特殊处理：优先读标准路径 ~/.config/walicode/ai_settings.json
-    let config_path = if app_name == "walicode" {
+    // DaMaoCode 特殊处理：优先读标准路径 ~/.config/damaocode/ai_settings.json
+    let config_path = if app_name == "damaocode" {
         let standard_path = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("walicode")
+            .join("damaocode")
             .join("ai_settings.json");
         if standard_path.exists() {
             standard_path
@@ -1451,7 +1451,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "waliapi-appcfg-{}-{}",
+            "damaoapi-appcfg-{}-{}",
             tag,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1469,7 +1469,7 @@ mod tests {
         fs::write(&config, b"original").unwrap();
         backup_config(&config).unwrap();
         // 模拟网关写入覆盖
-        fs::write(&config, b"model_provider = \"waliapi\"").unwrap();
+        fs::write(&config, b"model_provider = \"damaoapi\"").unwrap();
 
         restore_config(&config).unwrap();
         assert_eq!(fs::read(&config).unwrap(), b"original");
@@ -1483,7 +1483,7 @@ mod tests {
         // 写入前配置不存在：打 absent 标记
         atomic_write(&absent_marker_path(&config), b"").unwrap();
         // 模拟网关写入
-        fs::write(&config, b"model_provider = \"waliapi\"").unwrap();
+        fs::write(&config, b"model_provider = \"damaoapi\"").unwrap();
 
         restore_config(&config).unwrap();
         assert!(!config.exists());
@@ -1502,7 +1502,7 @@ mod tests {
         let dir = temp_dir("detect-key");
         fs::write(
             dir.join("auth.json"),
-            r#"{"OPENAI_API_KEY": "sk-waliapi", "tokens": null}"#,
+            r#"{"OPENAI_API_KEY": "sk-damaoapi", "tokens": null}"#,
         )
         .unwrap();
         assert!(detect_codex_apikey_mode(&dir).is_some());
@@ -1543,7 +1543,7 @@ mod tests {
     fn reset_codex_auth_backs_up_and_resets_to_chatgpt_mode() {
         let dir = temp_dir("reset");
         let auth_path = dir.join("auth.json");
-        fs::write(&auth_path, r#"{"OPENAI_API_KEY": "sk-waliapi"}"#).unwrap();
+        fs::write(&auth_path, r#"{"OPENAI_API_KEY": "sk-damaoapi"}"#).unwrap();
 
         let result = reset_codex_auth_in(&dir).unwrap();
         assert!(result.success);
@@ -1554,10 +1554,10 @@ mod tests {
         assert!(reset["OPENAI_API_KEY"].is_null());
 
         let backup: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(dir.join("auth.json.waliapi-backup")).unwrap(),
+            &fs::read_to_string(dir.join("auth.json.damaoapi-backup")).unwrap(),
         )
         .unwrap();
-        assert_eq!(backup["OPENAI_API_KEY"], "sk-waliapi");
+        assert_eq!(backup["OPENAI_API_KEY"], "sk-damaoapi");
     }
 
     #[test]
@@ -1576,10 +1576,10 @@ mod tests {
             "modelPicker": {"options": [{"model": "user-model", "label": "User model"}]}
         });
 
-        apply_waliapi_claude_code_settings(
+        apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://127.0.0.1:8777///",
-            "sk-waliapi-test",
+            "sk-damaoapi-test",
             "gpt-5.6-luna[1m]",
         )
         .unwrap();
@@ -1590,7 +1590,7 @@ mod tests {
             settings["env"]["ANTHROPIC_BASE_URL"],
             "http://127.0.0.1:8777"
         );
-        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-waliapi-test");
+        assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-damaoapi-test");
         assert!(settings["env"]["ANTHROPIC_API_KEY"].is_null());
         assert_eq!(settings["model"], "gpt-5.6-luna[1m]");
         assert_eq!(settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"], "372000");
@@ -1608,7 +1608,7 @@ mod tests {
             "modelPicker": {"options": [{"model": "user-model"}]}
         });
 
-        apply_waliapi_claude_code_settings(
+        apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://gateway/",
             "key",
@@ -1628,7 +1628,7 @@ mod tests {
     fn claude_code_unknown_model_does_not_guess_context_or_capabilities() {
         let mut settings = serde_json::json!({"env": {}});
 
-        apply_waliapi_claude_code_settings(
+        apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://gateway",
             "key",
@@ -1639,7 +1639,7 @@ mod tests {
         assert!(settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"].is_null());
         assert!(settings.get("modelPicker").is_none());
         assert_eq!(
-            settings[WALIAPI_CLAUDE_SETTINGS_META]["modelCompatibility"]["confidence"],
+            settings[DAMAOAPI_CLAUDE_SETTINGS_META]["modelCompatibility"]["confidence"],
             "unknown"
         );
     }
@@ -1651,7 +1651,7 @@ mod tests {
         });
         let original = settings.clone();
 
-        let error = apply_waliapi_claude_code_settings(
+        let error = apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://gateway",
             "key",
@@ -1666,26 +1666,26 @@ mod tests {
     #[test]
     fn claude_code_legacy_api_key_is_migrated_only_when_matching_selected_key() {
         let mut settings = serde_json::json!({
-            "_waliapi": true,
+            "_damaoapi": true,
             "env": {"ANTHROPIC_API_KEY": "key"},
             "modelPicker": {"options": [{"model": "user-model"}]}
         });
-        apply_waliapi_claude_code_settings(&mut settings, "http://gateway", "key", "model")
+        apply_damaoapi_claude_code_settings(&mut settings, "http://gateway", "key", "model")
             .unwrap();
         assert_eq!(settings["env"]["ANTHROPIC_AUTH_TOKEN"], "key");
         assert!(settings["env"]["ANTHROPIC_API_KEY"].is_null());
         assert_eq!(settings["model"], "model");
-        assert_eq!(settings[WALIAPI_CLAUDE_SETTINGS_META]["version"], 3);
+        assert_eq!(settings[DAMAOAPI_CLAUDE_SETTINGS_META]["version"], 3);
     }
 
     #[test]
     fn claude_code_legacy_unknown_api_key_is_rejected_without_mutation() {
         let mut settings = serde_json::json!({
-            "_waliapi": true,
+            "_damaoapi": true,
             "env": {"ANTHROPIC_API_KEY": "user-secret"}
         });
         let original = settings.clone();
-        assert!(apply_waliapi_claude_code_settings(
+        assert!(apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://gateway",
             "key",
@@ -1699,14 +1699,14 @@ mod tests {
     fn claude_code_user_rewrite_of_managed_api_key_is_rejected() {
         let mut settings = serde_json::json!({
             "env": {"ANTHROPIC_API_KEY": "user-edited"},
-            WALIAPI_CLAUDE_SETTINGS_META: {
+            DAMAOAPI_CLAUDE_SETTINGS_META: {
                 "version": 3,
                 "managedEnvKeys": ["ANTHROPIC_API_KEY"],
                 "managedAuthFingerprint": secret_fingerprint("old-key")
             }
         });
         let original = settings.clone();
-        assert!(apply_waliapi_claude_code_settings(
+        assert!(apply_damaoapi_claude_code_settings(
             &mut settings,
             "http://gateway",
             "new-key",
@@ -1720,7 +1720,7 @@ mod tests {
     fn claude_code_marker_alone_is_not_detected_as_applied() {
         let dir = temp_dir("claude-marker-only");
         let path = dir.join("settings.json");
-        fs::write(&path, br#"{"_waliapi":true}"#).unwrap();
+        fs::write(&path, br#"{"_damaoapi":true}"#).unwrap();
         assert!(!detect_applied(&path, "claude-code"));
     }
 

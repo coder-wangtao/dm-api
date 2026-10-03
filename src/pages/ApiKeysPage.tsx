@@ -121,7 +121,7 @@ export function ApiKeysPage() {
         <div className="surface empty-state">
           <Key className="h-12 w-12 text-muted-foreground/70" />
           <p className="text-base font-medium">还没有创建任何密钥</p>
-          <p className="text-sm text-muted-foreground">创建后即可让客户端通过 OpenAI 兼容协议接入 WaLiAPI</p>
+          <p className="text-sm text-muted-foreground">创建后即可让客户端通过 OpenAI 兼容协议接入 DaMaoAPI</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -697,7 +697,7 @@ function ApiKeyForm({ editKey, onClose, onSaved }: { editKey?: ApiKey; onClose: 
                       value={customKey}
                       onChange={e => setCustomKey(e.target.value)}
                       className="w-full rounded-xl border border-border bg-background/70 px-3 py-2.5 text-sm font-mono"
-                      placeholder="sk-waliapi-xxxxxxxxxxxx"
+                      placeholder="sk-damaoapi-xxxxxxxxxxxx"
                       maxLength={128}
                     />
                     <p className="mt-1.5 text-[11px] text-muted-foreground">

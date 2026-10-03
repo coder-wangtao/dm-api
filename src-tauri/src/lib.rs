@@ -22,7 +22,7 @@ pub mod utils;
 pub mod web_server;
 
 /// 应用标识符（与 tauri.conf.json 一致），用于 headless 数据目录解析。
-pub const APP_IDENTIFIER: &str = "waliapi.xiaofuge.cn";
+pub const APP_IDENTIFIER: &str = "damaoapi.xiaofuge.cn";
 
 use std::sync::Arc;
 #[cfg(feature = "desktop-ui")]
@@ -98,10 +98,10 @@ pub fn run() {
         exe_log_dir
     };
 
-    // 按天滚动日志：文件名前缀 waliapi.log（如 waliapi.log.2026-08-25），最多保留 7 个文件
+    // 按天滚动日志：文件名前缀 damaoapi.log（如 damaoapi.log.2026-08-25），最多保留 7 个文件
     let file_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("waliapi.log")
+        .filename_prefix("damaoapi.log")
         .max_log_files(7)
         .build(&log_dir)
         .ok();
@@ -125,7 +125,7 @@ pub fn run() {
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(
-                    "sqlite:waliapi.db",
+                    "sqlite:damaoapi.db",
                     vec![tauri_plugin_sql::Migration {
                         version: 1,
                         description: "init database",
@@ -152,7 +152,7 @@ pub fn run() {
                 TrayIconBuilder::with_id("main")
                     .icon(app.default_window_icon().unwrap().clone())
                     .menu(&menu)
-                    .tooltip("WaLiAPI - Local LLM API Gateway")
+                    .tooltip("DaMaoAPI - Local LLM API Gateway")
                     .show_menu_on_left_click(false)
                     .on_tray_icon_event(|tray, event| {
                         if let TrayIconEvent::Click {
@@ -188,7 +188,7 @@ pub fn run() {
                     _ => {}
                 });
 
-                if env_flag("WALIAPI_HIDE_WINDOW") {
+                if env_flag("DAMAOAPI_HIDE_WINDOW") {
                     let _ = window.hide();
                 }
             }
@@ -265,7 +265,7 @@ pub fn run() {
                 });
 
                 // 桌面版启动即自动拉起内嵌服务（LLM 网关 + /admin/api）；
-                // Web 管理面板 SPA 仅在 embed-web 构建（waliapi-web / Docker）中提供。
+                // Web 管理面板 SPA 仅在 embed-web 构建（damaoapi-web / Docker）中提供。
                 let state_clone = state.clone();
                 let app_clone = app_handle.clone();
                 let handle = tauri::async_runtime::spawn(async move {
@@ -352,8 +352,8 @@ pub fn run() {
             commands::security::toggle_custom_security_rule,
             commands::security::delete_custom_security_rule,
             commands::import_export::export_channels,
-            commands::import_export::import_walicode_backup,
-            commands::import_export::import_waliapi_export,
+            commands::import_export::import_damaocode_backup,
+            commands::import_export::import_damaoapi_export,
             commands::import_export::scan_local_ai_configs,
             commands::import_export::import_scanned_sources,
             commands::import_export::pick_import_file,
@@ -367,7 +367,7 @@ pub fn run() {
             commands::app_config::open_config_folder,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building WaLiAPI")
+        .expect("error while building DaMaoAPI")
         .run(|app, event| {
             #[cfg(target_os = "macos")]
             {

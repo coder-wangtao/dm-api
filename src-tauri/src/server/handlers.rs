@@ -520,7 +520,7 @@ pub async fn handle_chat_completions(
         );
     }
 
-    // 请求关联键：X-Request-Id（兼容 Wali-Trace-Id，缺省生成 UUIDv4）。
+    // 请求关联键：X-Request-Id（兼容 Damao-Trace-Id，缺省生成 UUIDv4）。
     // 中间件已统一解析并回写请求头，此处调用同一 resolve 保证取到同一值；
     // 直调（测试/内部路径）时无中间件，resolve 自行解析兜底。
     let trace_id = Some(crate::server::request_id::resolve(&headers));
@@ -1346,7 +1346,7 @@ fn is_unsafe_proxy_header(name: &str) -> bool {
             | "content-type"
             | "expect"
             | "accept-encoding"
-            | "wali-trace-id"
+            | "damao-trace-id"
     )
 }
 
@@ -2217,7 +2217,7 @@ pub async fn handle_messages(
     // full tree before any routing/codec.  The raw query string is audited as
     // part of the envelope so the native executor can forward it safely.
     let query = uri.query().map(|s| s.to_string());
-    // 请求关联键：X-Request-Id（兼容 Wali-Trace-Id，缺省生成 UUIDv4）。
+    // 请求关联键：X-Request-Id（兼容 Damao-Trace-Id，缺省生成 UUIDv4）。
     let trace_id = Some(crate::server::request_id::resolve(&headers));
     let audited = match audit_original(
         security::gate::DownstreamProtocol::Messages,
@@ -4836,7 +4836,7 @@ mod list_models_tests {
         ApiKey {
             id: "key-1".to_string(),
             name: "key-1".to_string(),
-            key: "sk-waliapi-test".to_string(),
+            key: "sk-damaoapi-test".to_string(),
             status: 1,
             allowed_models: serde_json::to_string(allowed_models).unwrap(),
             allowed_channels: serde_json::to_string(allowed_channels).unwrap(),

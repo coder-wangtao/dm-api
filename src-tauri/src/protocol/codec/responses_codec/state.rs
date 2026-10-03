@@ -221,7 +221,7 @@ impl ResponsesChatState {
                 // 届时 call.arguments 仍为空，complete_tool_call 计算出的
                 // remaining 就是完整参数字符串。
                 //
-                // 为什么不逐片下发：部分客户端（实测 WaLiCode）不按 index 累积
+                // 为什么不逐片下发：部分客户端（实测 DamaoCode）不按 index 累积
                 // tool_call 分片，而是以 id 定位后整体覆盖 arguments，导致
                 // 只保留某一个分片而非拼接结果——分片越多坏得越彻底。
                 // 单个 delta 携带完整 arguments 同样符合 OpenAI 协议

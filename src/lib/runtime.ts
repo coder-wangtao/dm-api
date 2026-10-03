@@ -10,7 +10,7 @@ export const WEB_UNAUTHORIZED_EVENT = "damao:web-unauthorized";
  * Web 面板的命令调用实际全靠会话 Cookie 兜底，Bearer 形同虚设。
  */
 const WEB_ADMIN_TOKEN_STORAGE_KEY = "damao_admin_token";
-const WEB_ADMIN_TOKEN_LEGACY_SESSION_KEY = "waliapi.web.admin-token";
+const WEB_ADMIN_TOKEN_LEGACY_SESSION_KEY = "damaoapi.web.admin-token";
 
 export interface RuntimeEvent<T> {
   payload: T;

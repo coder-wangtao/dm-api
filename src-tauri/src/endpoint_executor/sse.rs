@@ -42,7 +42,7 @@ pub fn parse_data_payload(record: &[u8]) -> Result<String, String> {
 /// （转发的字节不经过累积），仅影响落库的 response_choices。
 pub(crate) const MAX_ACCUMULATED_CONTENT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const ACCUMULATION_TRUNCATION_MARKER: &str =
-    "\n\n[... WaLiAPI: accumulated content truncated ...]";
+    "\n\n[... DamaoAPI: accumulated content truncated ...]";
 
 /// Validate only enough framing to retain the pre-commit failover barrier.
 /// Full protocol validation belongs to the decoder factory selected at prepare
