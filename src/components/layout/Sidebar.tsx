@@ -71,7 +71,7 @@ export function Sidebar() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
             <img
-              src="/logo.png"
+              src="/favicon.ico"
               alt="DamaoAPI"
               className="h-full w-full object-cover"
             />

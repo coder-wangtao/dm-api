@@ -1,4 +1,17 @@
 fn main() {
+    // tauri-build 不会把图标文件列入 rerun-if-changed，只改 icons 时 cargo 会
+    // 直接复用旧 exe，窗口和任务栏就一直是上一次嵌进去的图标。
+    for icon in [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.png",
+        "icons/icon.ico",
+        "icons/icon.icns",
+    ] {
+        println!("cargo:rerun-if-changed={icon}");
+    }
+
     // tauri-build 默认会把 Common-Controls v6 清单打进 resource.lib 并只随
     // rustc-link-arg-bins 传给应用 bin。这里显式关闭它，改由下方统一注入同一份清单
     // （内容相同），避免 bin 同时拿到两份 RT_MANIFEST ID 1 资源导致链接失败。
