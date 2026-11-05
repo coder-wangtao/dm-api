@@ -220,6 +220,74 @@ impl Adaptor for ClaudeAdaptor {
 /// - `tool` role → `user` + `tool_result` block (Anthropic has no `tool`
 ///   role; the result is a `tool_result` content block on a `user` message,
 ///   paired to the originating call via `tool_use_id`).
+/// 
+/// 
+/// 
+/// [
+//   {
+//     "role": "system",
+//     "content": "你是一个天气助手"
+//   },
+//   {
+//     "role": "user",
+//     "content": "查询巴黎天气"
+//   },
+//   {
+//     "role": "assistant",
+//     "content": "我来查询一下",
+//     "tool_calls": [
+//       {
+//         "id": "call_001",
+//         "type": "function",
+//         "function": {
+//           "name": "get_weather",
+//           "arguments": "{\"city\":\"Paris\"}"
+//         }
+//       }
+//     ]
+//   },
+//   {
+//     "role": "tool",
+//     "tool_call_id": "call_001",
+//     "content": "巴黎天气：18°C，晴天"
+//   }
+// ]
+// =================================>
+// system："你是一个天气助手"
+// messages：[
+//   {
+//     "role": "user",
+//     "content": "查询巴黎天气"
+//   },
+//   {
+//     "role": "assistant",
+//     "content": [
+//       {
+//         "type": "text",
+//         "text": "我来查询一下"
+//       },
+//       {
+//         "type": "tool_use",
+//         "id": "call_001",
+//         "name": "get_weather",
+//         "input": {
+//           "city": "Paris"
+//         }
+//       }
+//     ]
+//   },
+//   {
+//     "role": "user",
+//     "content": [
+//       {
+//         "type": "tool_result",
+//         "tool_use_id": "call_001",
+//         "content": "巴黎天气：18°C，晴天"
+//       }
+//     ]
+//   }
+// ]
+
 fn convert_openai_messages_to_claude(
     messages: &serde_json::Value,
 ) -> (Option<String>, serde_json::Value) {
@@ -377,6 +445,42 @@ fn convert_openai_messages_to_claude(
 /// to Anthropic Messages `tools` (flat `{name, description, input_schema}`).
 /// Non-function tools (namespace / web_search / built-in) are dropped —
 /// Anthropic only supports function tools.
+/// [
+//   {
+//     "type": "function",
+//     "function": {
+//       "name": "get_weather",
+//       "description": "查询城市天气",
+//       "parameters": {
+//         "type": "object",
+//         "properties": {
+//           "city": {
+//             "type": "string",
+//             "description": "城市名称"
+//           }
+//         },
+//         "required": ["city"]
+//       }
+//     }
+//   }
+// ]
+// =================================>
+// [
+//   {
+//     "name": "get_weather",
+//     "description": "查询城市天气",
+//     "input_schema": {
+//       "type": "object",
+//       "properties": {
+//         "city": {
+//           "type": "string",
+//           "description": "城市名称"
+//         }
+//       },
+//       "required": ["city"]
+//     }
+//   }
+// ]
 fn convert_openai_tools_to_claude(tools: &serde_json::Value) -> serde_json::Value {
     let arr = match tools.as_array() {
         Some(a) => a,
@@ -410,6 +514,59 @@ fn convert_openai_tools_to_claude(tools: &serde_json::Value) -> serde_json::Valu
     serde_json::Value::Array(claude_tools)
 }
 
+// {
+//     "id": "msg_001",
+//     "content": [
+//       {
+//         "type": "text",
+//         "text": "巴黎天气不错。"
+//       },
+//       {
+//         "type": "tool_use",
+//         "id": "toolu_001",
+//         "name": "get_weather",
+//         "input": {
+//           "city": "Paris"
+//         }
+//       }
+//     ],
+//     "stop_reason": "tool_use",
+//     "usage": {
+//       "input_tokens": 100,
+//       "output_tokens": 50
+//     }
+//   }
+// =================================>
+// {
+//     "id": "msg_001",
+//     "object": "chat.completion",
+//     "model": "gpt-4o",
+//     "choices": [
+//       {
+//         "index": 0,
+//         "message": {
+//           "role": "assistant",
+//           "content": "巴黎天气不错。",
+//           "tool_calls": [
+//             {
+//               "id": "toolu_001",
+//               "type": "function",
+//               "function": {
+//                 "name": "get_weather",
+//                 "arguments": "{\"city\":\"Paris\"}"
+//               }
+//             }
+//           ]
+//         },
+//         "finish_reason": "tool_calls"
+//       }
+//     ],
+//     "usage": {
+//       "prompt_tokens": 100,
+//       "completion_tokens": 50,
+//       "total_tokens": 150
+//     }
+//   }
 fn convert_claude_to_openai(claude_json: &serde_json::Value, model: &str) -> serde_json::Value {
     let content_blocks = claude_json
         .get("content")
