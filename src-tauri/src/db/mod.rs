@@ -150,6 +150,7 @@ async fn backup_before_migration(
 }
 
 impl Database {
+    //&：引用，表示借用这个对象，而不是直接拿走它的所有权。
     pub async fn new(app: &AppHandle) -> Self {
         let app_data_dir = app
             .path()

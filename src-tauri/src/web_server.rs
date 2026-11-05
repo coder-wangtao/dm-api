@@ -33,8 +33,8 @@ pub fn resolve_data_dir(explicit: Option<String>) -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    // 与 tauri app_data_dir 对齐：$XDG_DATA_HOME/<identifier>（Docker 中即 /data/<identifier>）
-    let base = std::env::var("XDG_DATA_HOME")
+    // 与 tauri app_data_dir 对齐：$WT_DATA_HOME/<identifier>（Docker 中即 /data/<identifier>）
+    let base = std::env::var("WT_DATA_HOME")
         .ok()
         .filter(|v| !v.trim().is_empty());
     if let Some(base) = base {

@@ -280,7 +280,7 @@ pub async fn seed_builtin_rules(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         ),
     ];
 
-    let now = chrono::Utc::now()
+    let now: String = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
     for (id, rule_id, category, severity, title, desc, toggle_key) in &seeds {

@@ -5,7 +5,7 @@
 //!   damaoapi-web start [...同上参数...]
 //!   damaoapi-web repair-stream-logs [--data-dir <目录>] [--apply] [--limit <行>]
 //!
-//! 环境变量：DAMAOAPI_SERVER_HOST / DAMAOAPI_SERVER_PORT / DAMAOAPI_DATA_DIR / XDG_DATA_HOME
+//! 环境变量：DAMAOAPI_SERVER_HOST / DAMAOAPI_SERVER_PORT / DAMAOAPI_DATA_DIR / WT_DATA_HOME
 
 use tracing_subscriber::prelude::*;
 use damaoapi_lib::web_server::{resolve_data_dir, run, WebServerConfig};
@@ -24,7 +24,7 @@ fn print_usage() {
 选项:
   --host       监听地址（默认读取 DAMAOAPI_SERVER_HOST 或设置，缺省 127.0.0.1）
   --port       监听端口（默认读取 DAMAOAPI_SERVER_PORT 或设置，缺省 8777）
-  --data-dir   数据目录（默认读取 DAMAOAPI_DATA_DIR / XDG_DATA_HOME，再缺省为平台应用数据目录）
+  --data-dir   数据目录（默认读取 DAMAOAPI_DATA_DIR / WT_DATA_HOME，再缺省为平台应用数据目录）
   -h, --help   显示帮助
 
 子命令 repair-stream-logs:

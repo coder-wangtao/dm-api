@@ -307,7 +307,12 @@ export interface AuthLoginStart {
   sessionId: string;
 }
 
-export type AuthProviderId = "codex" | "kimi" | "gemini" | "grok" | (string & {});
+export type AuthProviderId =
+  | "codex"
+  | "kimi"
+  | "gemini"
+  | "grok"
+  | (string & {});
 export type AuthLoginMethod = "browser_callback" | "device_code";
 
 export interface AuthProviderInfo {
@@ -330,7 +335,13 @@ export interface DeviceVerification {
 export interface AuthLoginSessionStatus {
   sessionId: string;
   provider: string;
-  state: "pending" | "saving" | "syncing" | "succeeded" | "cancelled" | "failed";
+  state:
+    | "pending"
+    | "saving"
+    | "syncing"
+    | "succeeded"
+    | "cancelled"
+    | "failed";
   step:
     | "preparing"
     | "authorizing"
@@ -494,8 +505,8 @@ export interface UpdateBuiltinRuleInput {
 
 export interface CustomRule {
   id: string;
-  rule_type: string;  // blacklist | whitelist
-  category: string;   // domain | tool | path | keyword
+  rule_type: string; // blacklist | whitelist
+  category: string; // domain | tool | path | keyword
   pattern: string;
   severity: string;
   action: string;
@@ -567,7 +578,10 @@ export type ChannelRegionGroup =
   | "domestic"
   | "local";
 
-export type ChannelModelEnumStrategy = "static_only" | "static_plus_sync" | "sync_only";
+export type ChannelModelEnumStrategy =
+  | "static_only"
+  | "static_plus_sync"
+  | "sync_only";
 
 export type ChannelEndpointTestStrategy = "probe_first_model" | "list_models";
 

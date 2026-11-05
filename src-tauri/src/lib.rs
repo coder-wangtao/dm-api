@@ -22,7 +22,7 @@ pub mod utils;
 pub mod web_server;
 
 /// 应用标识符（与 tauri.conf.json 一致），用于 headless 数据目录解析。
-pub const APP_IDENTIFIER: &str = "damaoapi.xiaofuge.cn";
+pub const APP_IDENTIFIER: &str = "damaoapi.wangtao.cn";
 
 use std::sync::Arc;
 #[cfg(feature = "desktop-ui")]
@@ -74,6 +74,7 @@ pub struct AppState {
     pub data_dir: std::path::PathBuf,
 }
 
+//当编译条件 mobile 成立时，给当前函数添加 tauri::mobile_entry_point 属性；否则不添加。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 获取可执行文件所在目录
@@ -108,6 +109,7 @@ pub fn run() {
 
     // 日志级别支持 RUST_LOG 环境变量（缺省 info，与既有行为一致；GAP-04），
     // 生产排障可临时 RUST_LOG=debug 无需重编译。
+    //初始化 tracing 日志过滤器，优先读取环境变量中的日志级别配置；如果读取失败，就默认使用 info 级别。
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     // 统一输出到文件；构建失败时回退到标准输出
@@ -119,6 +121,174 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+    //tauri::Builder::default()
+    //作用：打开外部资源。
+    .plugin(tauri_plugin_opener::init())
+    //作用：与系统 Shell 或外部进程交互。
+    .plugin(tauri_plugin_shell::init())
+    //作用：提供系统原生对话框。
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(
+        //注册 SQLite 数据库插件，并为数据库配置初始化迁移脚本。
+        tauri_plugin_sql::Builder::default()
+            .add_migrations(
+                "sqlite:damaoapi.db",
+                vec![tauri_plugin_sql::Migration {
+                    version: 1,
+                    description: "init database",
+                    sql: include_str!("../migrations/001_init.sql"),
+                    kind: tauri_plugin_sql::MigrationKind::Up,
+                }],
+            )
+            .build(),
+    )
+    //本地键值存储
+    .plugin(tauri_plugin_store::Builder::default().build())
+    //系统剪贴板读写
+    .plugin(tauri_plugin_clipboard_manager::init())
+    //桌面系统通知
+    .plugin(tauri_plugin_notification::init())
+    //自动启动插件:应用程序的开机自动启动。
+    .plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        None::<Vec<&str>>,
+    ))
+    .setup(|app| {
+        #[cfg(feature = "desktop-ui")]
+        {
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .tooltip("DaMaoAPI - Local LLM API Gateway")
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let _ = restore_main_window(tray.app_handle());
+                    }
+                })
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "quit" => app.exit(0),
+                    "show" => {
+                        let _ = restore_main_window(app);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+        }
+
+        if let Some(window) = app.get_webview_window("main") {
+            let app_handle = app.handle().clone();
+            window.on_window_event(move |event| match event {
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if should_close_to_tray(&app_handle) {
+                        api.prevent_close();
+                        if let Some(main_window) = app_handle.get_webview_window("main") {
+                            let _ = main_window.hide();
+                        }
+                    }
+                }
+                _ => {}
+            });
+
+            if env_flag("DAMAOAPI_HIDE_WINDOW") {
+                let _ = window.hide();
+            }
+        }
+
+        let app_handle = app.handle().clone();
+        tauri::async_runtime::block_on(async move {
+            let data_dir = app_handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let db = db::Database::new(&app_handle).await;
+            let db = Arc::new(db);
+            if let Err(e) = server::admin_auth::ensure_initial_admin(&db.pool, &data_dir).await
+            {
+                log::error!("初始化 Web 管理员账号失败: {e}");
+            }
+            let auth_service = Arc::new(auth_provider::service::AuthService::new(
+                Arc::new(db::repository::Repository::new(db.pool.clone())),
+                auth_provider::ProviderRegistry::new(),
+            ));
+            let (event_tx, _) =
+                tokio::sync::broadcast::channel(server::event_bridge::EVENT_CHANNEL_CAPACITY);
+            let emit_handle = app_handle.clone();
+            let state = Arc::new(AppState {
+                db,
+                auth_service: auth_service.clone(),
+                login_sessions: Arc::new(commands::auth::LoginSessions::new()),
+                server_port: Arc::new(RwLock::new(0)),
+                server_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                server_handle: Arc::new(RwLock::new(None)),
+                test_receipts: Arc::new(crate::services::channel_test::TestReceiptStore::new(
+                    std::time::Duration::from_secs(30 * 60),
+                )),
+                admin_sessions: server::admin_auth::SessionStore::new(),
+                login_throttle: server::admin_auth::LoginThrottle::new(),
+                events: server::event_bridge::EventSink::desktop(
+                    move |event, payload| {
+                        let _ = emit_handle.emit(event, payload);
+                    },
+                    event_tx,
+                ),
+                settings: settings_store::SettingsStore::new(Arc::new(TauriSettingsBackend(
+                    app_handle.clone(),
+                ))),
+                data_dir,
+            });
+            app_handle.manage(state.clone());
+
+            crate::audit_log::apply_settings(&state.settings);
+            // 全局出站代理（VPN 固定端口）：启动时从设置加载。
+            {
+                let enabled = state.settings.get_bool("network.proxy.enabled", false);
+                let url = state.settings.get_str("network.proxy.url", "");
+                crate::adaptor::set_global_proxy(enabled.then_some(url));
+            }
+            tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
+                state.db.pool.clone(),
+                state.settings.clone(),
+            ));
+
+            // 渠道主动健康探测（默认开启 300s 一轮，可整体关闭）
+            tauri::async_runtime::spawn(crate::health_probe::run_probe_loop(
+                state.db.pool.clone(),
+                state.settings.clone(),
+            ));
+
+            // 语义缓存过期清理（C-02；缓存未启用时清理为空操作）
+            tauri::async_runtime::spawn(crate::semantic_cache::run_maintenance_loop(
+                state.db.pool.clone(),
+            ));
+
+            tauri::async_runtime::spawn(async move {
+                auth_provider::maintenance::run_maintenance_loop(auth_service).await;
+            });
+
+            // 桌面版启动即自动拉起内嵌服务（LLM 网关 + /admin/api）；
+            // Web 管理面板 SPA 仅在 embed-web 构建（damaoapi-web / Docker）中提供。
+            let state_clone = state.clone();
+            let app_clone = app_handle.clone();
+            let handle = tauri::async_runtime::spawn(async move {
+                if let Err(e) = server::start_server(state_clone, Some(app_clone)).await {
+                    log::error!("内嵌服务启动失败: {e}");
+                }
+            });
+            *state.server_handle.write().await = Some(handle);
+        });
+
+        Ok(())
+    })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -154,6 +324,7 @@ pub fn run() {
                     .menu(&menu)
                     .tooltip("DaMaoAPI - Local LLM API Gateway")
                     .show_menu_on_left_click(false)
+                    //监听系统托盘图标的鼠标事件，当用户用鼠标左键点击托盘图标并松开时，恢复应用主窗口。
                     .on_tray_icon_event(|tray, event| {
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
@@ -177,6 +348,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| match event {
+                    //move 会将闭包中使用的变量移动进闭包，避免生命周期问题。
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         if should_close_to_tray(&app_handle) {
                             api.prevent_close();
@@ -195,11 +367,13 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
+                //block_on 阻塞当前执行流程，直到内部的异步任务执行完成。
                 let data_dir = app_handle
                     .path()
                     .app_data_dir()
                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let db = db::Database::new(&app_handle).await;
+                //Arc 是线程安全的引用计数智能指针。允许多个线程或异步任务共享同一个对象，而不需要复制数据库连接池。
                 let db = Arc::new(db);
                 if let Err(e) = server::admin_auth::ensure_initial_admin(&db.pool, &data_dir).await
                 {
