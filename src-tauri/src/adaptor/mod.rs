@@ -141,7 +141,8 @@ fn blocking_client_map() -> &'static Mutex<HashMap<(u64, String), reqwest::Clien
 /// 出站代理语义：`Some(url)` → 请求经该代理转发；`None` → 显式直连
 ///（`.no_proxy()`，忽略进程环境变量代理），保证「直连」可预期。
 pub fn blocking_client(timeout_secs: u64, proxy_url: Option<&str>) -> reqwest::Client {
-    let key = (timeout_secs.max(1), proxy_url.unwrap_or("").to_string());
+    //构造缓存 Key
+    let key: (u64, String) = (timeout_secs.max(1), proxy_url.unwrap_or("").to_string());
     let mut buckets = blocking_client_map()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
