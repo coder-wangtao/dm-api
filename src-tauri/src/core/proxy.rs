@@ -51,6 +51,17 @@ pub struct ProxyResult {
     pub duration_ms: u64,
 }
 
+// 例如，客户端发送：
+// {
+//     "model": "gpt-4",
+//     "messages": [
+//       {
+//         "role": "user",
+//         "content": "你好"
+//       }
+//     ]
+// }
+//TODO:
 pub async fn handle_request(
     repo: &Arc<Repository>,
     settings: &SettingsStore,
@@ -67,13 +78,15 @@ pub async fn handle_request(
     // (e.g. RAG) that do not pass the gate yet.
     audit: Option<&security::SecurityScanResult>,
 ) -> Result<ProxyResult, (u16, String)> {
-    let start: Instant = Instant::now();
+    let start: Instant = Instant::now(); // 记录请求开始时间
     let model: String = body
         .get("model")
         .and_then(|m| m.as_str())
         .unwrap_or("")
         .to_string();
+    // 从 Tauri Store 读取安全配置
     let security_settings = security::get_security_settings(settings);
+    //如果安全审计启用，自定义的规则
     let custom_rules = if security_settings.enabled {
         security::rules::CustomRuleRepository::get_enabled(repo.pool())
             .await
@@ -86,11 +99,14 @@ pub async fn handle_request(
     // competing non-authoritative audit — only do that when the caller had no
     // gate (legacy RAG path).
     let mut security_result = match audit {
+        // 直接 clone 前置安全检查结果，不重新扫描 body。
         Some(result) => result.clone(),
+        // 调用 scan_request() 扫描当前 body。
         None => security::scan_request(&body, &security_settings, &custom_rules),
     };
 
     // Real redaction: if redact mode is active, sanitize the request body before forwarding
+    // 如果策略是脱敏（或强制脱敏开关打开），在转发前改写请求体
     let (forward_body, was_redacted) =
         if matches!(security_result.action, security::SecurityAction::Redact)
             || security_settings.redact_secrets
@@ -99,10 +115,11 @@ pub async fn handle_request(
         } else {
             (body.clone(), false)
         };
+
     if was_redacted {
         security_result.sanitized = true;
     }
-
+    // 策略判定为阻断：记录日志后返回 451（法律原因不可用）
     if matches!(security_result.action, security::SecurityAction::Block) {
         let log = RequestLog {
             id: utils::id::new_id(),
@@ -140,6 +157,7 @@ pub async fn handle_request(
             eprintln!("[WARN] create_log failed: {}", e);
         }
         if let Err(e) = repo
+            // 同时保存风险明细（哪些规则被触发了）
             .create_security_findings(
                 &log_id,
                 &security_result.findings,
@@ -149,6 +167,7 @@ pub async fn handle_request(
         {
             eprintln!("[WARN] create_security_findings failed: {}", e);
         }
+        //拦截调
         return Err((451, security_result.summary));
     }
 
@@ -161,11 +180,13 @@ pub async fn handle_request(
     }
 
     let selected_channels = Dispatcher::select_channels(&channels, &model);
+
     if selected_channels.is_empty() {
         return Err((503, format!("No channel available for model: {}", model)));
     }
-
+    // 从 Tauri Store 读取重试配置
     let (retry_enabled, retry_times) = get_retry_settings(settings);
+    // 最大尝试次数 = 重试次数 + 1（首次），且不超过可用渠道数
     let max_attempts = if retry_enabled {
         (retry_times.max(0) as usize + 1).min(selected_channels.len())
     } else {
@@ -205,6 +226,7 @@ pub async fn handle_request(
             stream: is_stream,
         };
 
+        // 发发送上游请求
         let result = adaptor.forward(&request, &config).await;
         let duration_ms = attempt_start.elapsed().as_millis() as u64;
         let is_retry = if attempt > 0 { 1 } else { 0 };
@@ -249,6 +271,7 @@ pub async fn handle_request(
                     if let Err(e) = repo.create_log(&log).await {
                         eprintln!("[WARN] create_log failed: {}", e);
                     }
+                    //保存安全审计结果
                     if let Err(e) = repo
                         .create_security_findings(
                             &log_id,
@@ -293,6 +316,7 @@ pub async fn handle_request(
                 // Scan response for risks and merge into the request audit
                 //（FIX-16：合并语义收敛到 security::scan_response_into 单一实现；
                 // custom_rules 随上游 PR #64 贯通响应侧）
+                // 扫描响应体，合并到请求审计结果
                 security::scan_response_into(
                     &mut security_result,
                     &resp_body,
@@ -300,6 +324,7 @@ pub async fn handle_request(
                     &custom_rules,
                 );
 
+                //提取上游返回的 Token 用量
                 let (prompt_tokens, completion_tokens, total_tokens) = {
                     let (p, c, t) = (
                         usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0),

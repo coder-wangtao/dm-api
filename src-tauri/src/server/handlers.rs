@@ -60,6 +60,8 @@ async fn audit_original(
     } else {
         vec![]
     };
+    // 对原始 API 请求进行安全审计（Security Audit），在请求真正转发到下游模型之前，
+    // 检查请求是否符合安全策略，并根据检查结果决定是否放行
     match security::gate::gate_original(
         protocol,
         endpoint,
@@ -117,6 +119,8 @@ async fn audit_original(
 /// this file; folding them into a struct would be an interface change across a
 /// frozen handler surface, so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
+//根据功能开关、请求认证信息、可用渠道（Channel）和认证账号（Auth Account），
+// 决定当前 API 请求是否进入新的 RoutePlan 路由系统，并执行请求转发、重试、流式响应和日志记录。
 async fn maybe_route_plan(
     shared: &SharedState,
     repo: &std::sync::Arc<Repository>,
@@ -129,10 +133,12 @@ async fn maybe_route_plan(
     sanitized_log_body: &str,
     trace_id: Option<String>,
 ) -> Result<Option<Response>, Response> {
+    //代码读取系统功能开关
     let flags = feature_flags::read_feature_flags(&shared.state.settings);
     // Auth accounts are request-scoped route candidates. They force the mixed
     // RoutePlan rollout while the global Channel rollout flag is off; absent a
     // usable account, retain the legacy pure-Channel path unchanged.
+    //查询 Auth Accounts
     let accounts = repo
         .list_route_accounts(&crate::utils::time::now_iso())
         .await
@@ -481,11 +487,13 @@ pub async fn handle_chat_completions(
     body: axum::body::Bytes,
 ) -> Response {
     let body_str = String::from_utf8_lossy(&body);
+    //转换后变成 JSON 字符串：
     let json: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(j) => j,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response(),
     };
 
+    //是否为流式请求
     let is_stream = json
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -541,12 +549,15 @@ pub async fn handle_chat_completions(
         Ok(audited) => audited,
         Err(response) => return response,
     };
+    //安全评分、风险等级、审计动作、摘要等。
     let audit_result = audited.audit_result.clone();
+    //经过安全处理后，实际准备转发给上游的 JSON。
     let forward_json = audited.forward_json.clone();
 
     // Never persist the raw request body.  Only the gate's sanitized log body
     // reaches the log layer; raw bytes are used solely for scanning, hashing
     // and length/parse forensics.
+    // 经过脱敏的日志 JSON，不直接保存原始请求内容。
     let request_body_str = serde_json::to_string(&audited.sanitized_log_json).unwrap_or_default();
 
     if matches!(audit_result.action, security::SecurityAction::Block) {
@@ -3117,9 +3128,12 @@ pub async fn handle_responses(
     };
     let audit_result = audited.audit_result.clone();
     let forward_json = audited.forward_json.clone();
+    //把脱敏后的 JSON 转换成字符串。
     let request_body_str = serde_json::to_string(&audited.sanitized_log_json).unwrap_or_default();
 
     if matches!(audit_result.action, security::SecurityAction::Block) {
+        //如果审计结果是 Block，就直接阻止请求。
+        //记录安全阻断日志
         log_security_block(
             &repo,
             &key_record.id,
@@ -3146,6 +3160,7 @@ pub async fn handle_responses(
     // G1 native `/responses` passthrough (when `native_responses` is ON) first,
     // G2 explicit `responses_via_chat_v1` debt only.  The old unconditional
     // Responses→Chat conversion is removed from this path.
+    //这里过滤请求头，只保留允许转发的安全请求头。
     let safe_headers = crate::endpoint_executor::safe_request_headers(&headers);
     match maybe_route_plan(
         &shared,

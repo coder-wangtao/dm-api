@@ -414,6 +414,14 @@ impl HasPriorityWeight for RouteGroupCandidate {
 
 /// Order candidates by priority descending; within a priority tier, sample by
 /// weight WITHOUT replacement (same semantics as the legacy Dispatcher).
+/// 
+/// 
+/// 假设你配置了多个 API 渠道：
+// 渠道	Priority	Weight	作用
+// 官方 API	3	80	主渠道
+// 代理 API	3	20	主渠道备用
+// 备用供应商	2	100	第一故障转移渠道
+// 低成本供应商	1	100	最后备用
 pub fn order_by_priority_weight<T, R>(mut candidates: Vec<T>, rng: &mut R) -> Vec<T>
 where
     T: HasPriorityWeight + Clone,
@@ -422,8 +430,14 @@ where
     if candidates.is_empty() {
         return candidates;
     }
+    // 按优先级从大到小排列
+    // A(priority=3 weight=80)
+    // B(priority=3 weight=20)
+    // C(priority=2 weight=-10 => 0)
+    // D(priority=2)
+    // E(priority=1)
     candidates.sort_by_key(|c| std::cmp::Reverse(c.priority()));
-    let mut ordered = Vec::with_capacity(candidates.len());
+    let mut ordered = Vec::with_capacity(candidates.len()); //初始化结果数组
     let mut start = 0;
     while start < candidates.len() {
         let priority = candidates[start].priority();
@@ -431,16 +445,17 @@ where
         while end < candidates.len() && candidates[end].priority() == priority {
             end += 1;
         }
-        let mut group = candidates[start..end].to_vec();
+        let mut group = candidates[start..end].to_vec(); // 这就是 Priority 为 3 的分组。 [A, B]
         while !group.is_empty() {
-            let total_weight: i64 = group.iter().map(|c| c.weight().max(0)).sum();
+            let total_weight: i64 = group.iter().map(|c| c.weight().max(0)).sum(); //获取每个渠道的权重。
             let index = if total_weight > 0 {
                 let mut point = rng.random_range(0..total_weight);
                 let mut selected = 0;
                 for (idx, c) in group.iter().enumerate() {
+                    // 从权重最大的开始，依次减去权重，直到减到0为止。 权重越大，概率越高
                     point -= c.weight().max(0);
                     if point < 0 {
-                        selected = idx;
+                        selected = idx; 
                         break;
                     }
                 }

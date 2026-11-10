@@ -185,6 +185,8 @@ pub fn scan_with_budget(
     })
 }
 
+//  递归遍历一个 serde_json::Value 类型的 JSON 数据，
+// 逐个检查其中的节点，并对字符串内容进行扫描，同时统计扫描量、控制递归深度和限制扫描预算。
 fn walk_json(
     value: &serde_json::Value,
     phase: &str,

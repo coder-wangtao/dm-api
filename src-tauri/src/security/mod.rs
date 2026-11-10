@@ -135,23 +135,23 @@ pub fn get_security_settings(settings: &crate::settings_store::SettingsStore) ->
     let defaults = SecuritySettings::default();
 
     SecuritySettings {
-        enabled: settings.get_bool("security.enabled", defaults.enabled),
+        enabled: settings.get_bool("security.enabled", defaults.enabled), //启用安全审计
         mode: {
-            let value = settings.get_str("security.mode", &defaults.mode);
+            let value = settings.get_str("security.mode", &defaults.mode); //安全模式
             if value.is_empty() {
                 defaults.mode
             } else {
                 value
             }
         },
-        scan_request: settings.get_bool("security.scan_request", defaults.scan_request),
-        scan_response: settings.get_bool("security.scan_response", defaults.scan_response),
-        scan_unicode: settings.get_bool("security.scan_unicode", defaults.scan_unicode),
-        scan_tools: settings.get_bool("security.scan_tools", defaults.scan_tools),
+        scan_request: settings.get_bool("security.scan_request", defaults.scan_request), //响应侧安全扫描
+        scan_response: settings.get_bool("security.scan_response", defaults.scan_response), //响应侧安全扫描
+        scan_unicode: settings.get_bool("security.scan_unicode", defaults.scan_unicode), //Unicode 隐写检测
+        scan_tools: settings.get_bool("security.scan_tools", defaults.scan_tools), //工具/命令风险检测
         scan_network: settings.get_bool("security.scan_network", defaults.scan_network),
-        redact_secrets: settings.get_bool("security.redact_secrets", defaults.redact_secrets),
+        redact_secrets: settings.get_bool("security.redact_secrets", defaults.redact_secrets),//请求脱敏转发
         block_on_critical: settings
-            .get_bool("security.block_on_critical", defaults.block_on_critical),
+            .get_bool("security.block_on_critical", defaults.block_on_critical), //严重风险强制阻断
         max_scan_bytes: settings.get_u64("security.max_scan_bytes", defaults.max_scan_bytes as u64)
             as usize,
     }
@@ -175,7 +175,7 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
         }
         "redact" => {
             if result.risk_level.rank() >= RiskLevel::High.rank() {
-                SecurityAction::Redact
+                SecurityAction::Redact  
             } else {
                 SecurityAction::Allow
             }
