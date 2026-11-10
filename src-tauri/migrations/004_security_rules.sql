@@ -1,4 +1,5 @@
 -- Built-in security rules (seeded by app, editable by user)
+-- 内置安全规则
 CREATE TABLE IF NOT EXISTS security_builtin_rules (
     id          TEXT PRIMARY KEY,
     rule_id     TEXT NOT NULL UNIQUE,
@@ -12,6 +13,7 @@ CREATE TABLE IF NOT EXISTS security_builtin_rules (
 );
 
 -- Custom security rules (user-defined blacklist/whitelist entries)
+-- 自定义安全规则
 CREATE TABLE IF NOT EXISTS security_custom_rules (
     id          TEXT PRIMARY KEY,
     rule_type   TEXT NOT NULL,          -- 'blacklist' | 'whitelist'

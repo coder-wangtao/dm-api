@@ -1054,6 +1054,7 @@ impl Repository {
         Ok(())
     }
 
+    //根据 API Key 的 ID，增加该 Key 已使用的 Token 数量，同时保证在设置了配额上限的情况下，已使用量不会超过配额上限。
     pub async fn increment_quota(&self, id: &str, tokens: i64) -> Result<(), sqlx::Error> {
         // 配额递增带封顶（C-01）：quota_limit > 0 时 quota_used 不越过上限；
         // -1/0 表示不限，纯加法。检查发生在请求前、递增在响应后，并发窗口内

@@ -518,6 +518,7 @@ pub async fn handle_chat_completions(
         Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
     };
 
+    // quota_limit <= 0 表示不限；> 0 时检查已用量
     if key_record.quota_limit > 0 && key_record.quota_used >= key_record.quota_limit {
         // 配额拒绝是 Key 维度终态：429 + OpenAI JSON 错误体（与其他端点一致），
         // 不做渠道 failover（C-01）。

@@ -127,8 +127,10 @@ pub fn scan_with_budget(
     ctx.check_budget()?;
 
     let findings = ctx.findings;
-    let mut score = 0;
-    let mut max_level = RiskLevel::Clean;
+
+    // 基础分：取单条最高严重度
+    let mut score = 0;     // 保存当前最高基础风险分数
+    let mut max_level = RiskLevel::Clean;  //保存当前最高风险等级
     for f in &findings {
         let base = match f.severity {
             RiskLevel::Clean => 0,
@@ -139,11 +141,12 @@ pub fn scan_with_budget(
             RiskLevel::Critical => 90,
         };
         score = score.max(base);
+        // 获取最高风险等级
         if f.severity.rank() > max_level.rank() {
             max_level = f.severity.clone();
         }
     }
-
+    // 组合加分：多类风险同时出现，危险不是线性叠加而是指数增长
     let has_credential = findings.iter().any(|f| f.category == "credential");
     let has_network = findings.iter().any(|f| f.category == "network");
     let has_sensitive_file = findings.iter().any(|f| f.rule_id == "file.sensitive_path");
@@ -292,6 +295,7 @@ fn scan_text(text: &str, phase: &str, location: &str, ctx: &mut ScanContext) {
     );
 }
 
+// 按分隔符切分候选 token
 fn scan_credentials(text: &str, phase: &str, location: &str, ctx: &mut ScanContext) {
     for token in split_candidates(text) {
         let t = token.trim_matches(|c: char| {

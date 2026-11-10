@@ -455,7 +455,7 @@ impl CustomRuleRepository {
 }
 
 // ─── Rule matching helpers ──────────────────────────────────────────────────
-
+// 根据用户配置的自定义安全规则，扫描输入文本，如果发现文本中包含黑名单规则指定的内容，就生成一条安全告警（SecurityFinding）。
 pub fn apply_custom_rules(
     text: &str,
     phase: &str,
@@ -463,12 +463,13 @@ pub fn apply_custom_rules(
     custom_rules: &[CustomRule],
     findings: &mut Vec<SecurityFinding>,
 ) {
-    let lower = text.to_ascii_lowercase();
+    let lower = text.to_ascii_lowercase(); //将输入文本中的 ASCII 大写字母转换为小写。
     for rule in custom_rules {
         if rule.enabled == 0 {
             continue;
         }
         let pattern_lower = rule.pattern.to_ascii_lowercase();
+        // 表示只要类别是这四种中的任意一种，就执行： "domain" | "tool" | "path" | "keyword"
         let matched = match rule.category.as_str() {
             "domain" | "tool" | "path" | "keyword" => lower.contains(&pattern_lower),
             _ => false,

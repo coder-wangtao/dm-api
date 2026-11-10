@@ -9,12 +9,12 @@ pub mod scanner;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
-    Clean,
-    Info,
-    Low,
-    Medium,
-    High,
-    Critical,
+    Clean, // 0 无风险
+    Info, // 1 提示（如外部 URL）
+    Low, // 2 低风险（邮箱、手机号）
+    Medium,  // 3 中风险（本地路径、零宽字符）
+    High,   // 4 高风险（密钥、敏感路径、IP 探测）
+    Critical,  // 5 严重（私钥、数据外传命令）
 }
 
 impl RiskLevel {
@@ -41,14 +41,15 @@ impl RiskLevel {
     }
 }
 
+/// 安全动作：扫描后决定怎么处理这个请求
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SecurityAction {
-    Allow,
-    Warn,
-    Redact,
-    Confirm,
-    Block,
+    Allow,   // 放行
+    Warn,      // 警告（记录但放行）
+    Redact,  // 脱敏后放行
+    Confirm, // 需要确认（预留）
+    Block, // 阻断
 }
 
 impl SecurityAction {
@@ -63,22 +64,24 @@ impl SecurityAction {
     }
 }
 
+/// 单条风险发现
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFinding {
-    pub phase: String,
-    pub category: String,
-    pub rule_id: String,
+    pub phase: String,     // request | response  区分请求侧和响应侧扫描（响应也可能有风险，比如模型输出了训练数据中的密钥）
+    pub category: String,  // credential | file | unicode | network | tool | prompt
+    pub rule_id: String,   // 如 credential.secret_token
     pub severity: RiskLevel,
     pub title: String,
     pub description: String,
-    pub location: String,
-    pub evidence_masked: String,
+    pub location: String,  // JSON 路径，如 $.messages[0].content  用 JSONPath 风格记录风险位置，前端可以精确定位到哪个字段
+    pub evidence_masked: String,  // 打码证据，如 sk-abc****wxyz  日志中保存的证据是打码的！审计系统自己不能再成为泄露源
 }
 
+/// 一次扫描的完整结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityScanResult {
     pub risk_level: RiskLevel,
-    pub risk_score: i32,
+    pub risk_score: i32,  // 0-100 综合评分
     pub action: SecurityAction,
     pub sanitized: bool,
     pub blocked_reason: Option<String>,
@@ -102,16 +105,16 @@ impl Default for SecurityScanResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    pub enabled: bool,
-    pub mode: String,
-    pub scan_request: bool,
-    pub scan_response: bool,
-    pub scan_unicode: bool,
-    pub scan_tools: bool,
-    pub scan_network: bool,
-    pub redact_secrets: bool,
-    pub block_on_critical: bool,
-    pub max_scan_bytes: usize,
+    pub enabled: bool,  // 总开关
+    pub mode: String, /// audit | warn | redact | confirm | block
+    pub scan_request: bool, // 扫描请求
+    pub scan_response: bool,  // 扫描响应
+    pub scan_unicode: bool,    // Unicode 隐写检测
+    pub scan_tools: bool,   // 工具/命令风险检测
+    pub scan_network: bool,     // 网络风险检测
+    pub redact_secrets: bool, // 强制脱敏
+    pub block_on_critical: bool,  // Critical 强制阻断（无视 mode）
+    pub max_scan_bytes: usize,   // 单字段最大扫描字节数（性能保护）
 }
 
 impl Default for SecuritySettings {
@@ -165,7 +168,9 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
 
     let mode = settings.mode.as_str();
     result.action = match mode {
+        // 只审计：全部放行，仅记录
         "off" | "audit" => SecurityAction::Allow,
+        // 警告模式：Medium 以上标记 Warn（仍放行，前端可提示）
         "warn" => {
             if result.risk_level.rank() >= RiskLevel::Medium.rank() {
                 SecurityAction::Warn
@@ -173,6 +178,7 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
                 SecurityAction::Allow
             }
         }
+        // 脱敏模式：High 以上先脱敏再转发
         "redact" => {
             if result.risk_level.rank() >= RiskLevel::High.rank() {
                 SecurityAction::Redact  
@@ -187,6 +193,7 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
                 SecurityAction::Allow
             }
         }
+        // 阻断模式：High 以上直接拒绝
         "block" => {
             if result.risk_level.rank() >= RiskLevel::High.rank() {
                 SecurityAction::Block
@@ -196,7 +203,7 @@ pub fn decide_action(result: &mut SecurityScanResult, settings: &SecuritySetting
         }
         _ => SecurityAction::Allow,
     };
-
+    // 兜底：Critical 强制阻断开关（任何模式下都生效）
     if settings.block_on_critical && result.risk_level == RiskLevel::Critical {
         result.action = SecurityAction::Block;
     }
