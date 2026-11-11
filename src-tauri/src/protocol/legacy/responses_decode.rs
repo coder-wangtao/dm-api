@@ -30,6 +30,7 @@ fn responses_tool_choice_to_chat(tc: &Value) -> Option<Value> {
 }
 
 /// Convert Responses API request to OpenAI Chat Completions format.
+/// 将 OpenAI Responses API 格式的请求，转换成 OpenAI Chat Completions API 格式的请求。
 pub fn responses_to_openai(
     body: &Value,
 ) -> Result<Value, crate::protocol::codec::UnsupportedFeatures> {

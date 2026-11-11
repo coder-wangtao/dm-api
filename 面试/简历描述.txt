@@ -23,9 +23,6 @@ DamaoAPI｜本地大模型 API 网关（桌面端 + 无头服务）
 桌面端与无头模式共用同一套 Rust 核心：桌面用 Tauri 命令，Web 管理端通过 HTTP invoke 复用同一前端页面。
 知识库侧支持 PDF 解析与页面渲染、多语言 tree-sitter 代码切分，以及在上游未返回 usage 时用 tiktoken 估算 token。
 
-
-
-
 ChatBox  ──sk-damao-aaa──┐
 NextChat ──sk-damao-bbb──┼──→ WaLiAPI ──sk-openai-xxx──→ OpenAI
 WaLiCode ──sk-damao-ccc──┘    （密钥映射 + 配额 + 审计）
@@ -77,3 +74,83 @@ Unicode 特殊字符检测器，主要用于检测文本中隐藏的、肉眼不
 
 5. SSE 流式透传与 Token 用量统计
 实现 SSE 流式透传：流式客户端只限制连接超时、不截断长生成；协议转换场景下把上游事件帧实时桥接回 OpenAI SSE。按 prompt / completion / cached / total 记录 Token，写入请求日志并累计到密钥配额；上游未返回 usage 时用 tiktoken 本地估算，保证计量不断档。
+
+Cursor/OpenAI SDK
+POST /v1/chat/completions 这是传统且广泛兼容的 OpenAI 对话接口。
+{
+  "model": "gpt-4o",
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ]
+}
+Claude Desktop
+POST /v1/messages
+{
+  "model": "claude-sonnet",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "你好"
+    }
+  ]
+}
+MCP Client
+POST /v1/responses 这是 OpenAI Responses API 的接口路径。、
+┌─────────────────────────────────────────────────────┐
+│              下游应用（三种协议）                      │
+│  Cursor/OpenAI SDK ──→ /v1/chat/completions          │
+│  Claude Desktop ────→ /v1/messages                  │
+│  MCP Client ────────→ /v1/responses                  │
+└───────────────────────┬─────────────────────────────┘
+                        │ 三种请求格式
+┌───────────────────────▼─────────────────────────────┐
+│              damaoAPI Protocol 层                      │
+│  anthropic_to_openai() ──→ OpenAI 格式               │
+│  responses_to_openai()  ──→ OpenAI 格式               │
+│  Chat Completions 直接 → OpenAI 格式                  │
+└───────────────────────┬─────────────────────────────┘
+                        │ 统一 OpenAI 格式
+┌───────────────────────▼─────────────────────────────┐
+│              Proxy 层（渠道分发 + 重试）               │
+│  dispatcher → adaptor → upstream                      │
+└───────────────────────┬─────────────────────────────┘
+                        │ OpenAI 格式响应
+┌───────────────────────▼─────────────────────────────┐
+│              Protocol 层反向转换                       │
+│  openai_to_anthropic() ──→ Anthropic 格式            │
+│  openai_to_responses()  ──→ Responses 格式            │
+│  Chat Completions 直接 → OpenAI 格式                  │
+└───────────────────────┬─────────────────────────────┘
+                        │ 三种响应格式
+┌───────────────────────▼─────────────────────────────┐
+│              下游应用收到对应格式的响应                  │
+└─────────────────────────────────────────────────────┘
+
+
+
+
+
+为什么 WaLiAPI 选择在网关层做协议转换，而不是让下游应用各自适配不同供应商的 API 格式？
+
+提示：考虑 N×M 的适配矩阵复杂度、维护成本、以及网关层统一转换后新增协议只需加转换层的扩展性优势。
+
+Anthropic 的 SSE 流式事件与 OpenAI 的 SSE 流式事件在结构上有哪些关键差异？转换时最容易踩的坑是什么？
+
+提示：OpenAI 是 delta.content 逐字推送，Anthropic 需要 message_start → content_block_start → content_block_delta → content_block_stop → message_delta → message_stop 完整生命周期。踩坑点：状态追踪（文本块何时关闭、tool_use 块的 index 管理）。
+
+Responses API 和 Chat Completions API 的核心区别是什么？为什么 OpenAI 要推出 Responses API？
+
+提示：Chat Completions 是对话式（messages 数组），Responses 是 Agent 式（input/output 扁平数组 + 内置工具）。Responses API 更适合 MCP 和 Agent 场景。
+
+tool_use 和 tool_calls 的转换中，input（JSON 对象）和 arguments（JSON 字符串）的互转有什么需要注意的边界情况？
+
+提示：serde_json::to_string 可能因特殊字符失败；serde_json::from_str 对不完整 JSON 会报错（流式场景下 arguments 是增量拼接的）。
+
+extract_api_key 为什么优先检查 Authorization: Bearer 而不是 x-api-key？这种优先级选择有什么实际场景依据？
+
+提示：有些应用（如 Cursor）发送 Anthropic 请求时也带 Bearer header。优先 Bearer 可以兼容这种"混合认证"场景，避免错误提取到空 key。
+

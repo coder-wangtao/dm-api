@@ -5,6 +5,7 @@ use serde_json::Value;
 /// This deliberately fails instead of inventing tool input when an upstream
 /// returns malformed function arguments. Claude Code uses those arguments to
 /// execute local tools, so replacing bad JSON with `{}` is unsafe.
+/// OpenAI Chat Completions API 返回的 JSON 响应，转换成 Anthropic Claude Messages API 所要求的消息格式。
 pub fn openai_to_anthropic(openai_resp: &Value, model: &str) -> Result<Value, String> {
     let choice = openai_resp
         .get("choices")
@@ -163,3 +164,18 @@ pub fn openai_to_anthropic(openai_resp: &Value, model: &str) -> Result<Value, St
         }
     }))
 }
+
+
+// OpenAI SSE 流式序列：
+// data: {"choices":[{"delta":{"role":"assistant"}}]}
+// data: {"choices":[{"delta":{"content":"Hello"}}]}
+// data: {"choices":[{"delta":{"content":" world"}}]}
+// data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+// data: [DONE]
+// Anthropic SSE 流式序列：
+// event: message_start    → 整体消息开始
+// event: content_block_start → 文本/工具块开始
+// event: content_block_delta → 文本增量 / input_json_delta
+// event: content_block_stop  → 块结束
+// event: message_delta      → stop_reason + usage
+// event: message_stop       → 整体结束
