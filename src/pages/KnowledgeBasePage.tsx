@@ -79,8 +79,6 @@ import {
   Tag,
   Sliders,
   ChevronUp,
-  Code,
-  ExternalLink,
   Package,
   Rocket,
   Puzzle,
