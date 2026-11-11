@@ -134,10 +134,14 @@ pub fn resolve_channel_identity(row: &ChannelIdentityRow) -> ChannelIdentity {
     {
         let protocol = row.protocol.as_deref().unwrap_or("").to_string();
         let provider = row.provider.as_deref().unwrap_or("").to_string();
+        let native_base_url = normalize_native_base_url(
+            &protocol,
+            row.native_base_url.as_deref().unwrap_or_default(),
+        );
         return ChannelIdentity {
             protocol: protocol.clone(),
             provider: provider.clone(),
-            native_base_url: row.native_base_url.clone().unwrap_or_default(),
+            native_base_url,
             native_endpoints: endpoints,
             identity_revision,
             legacy_executor_override: row.legacy_executor_override.clone(),
@@ -155,6 +159,17 @@ pub fn resolve_channel_identity(row: &ChannelIdentityRow) -> ChannelIdentity {
         row.legacy_executor_override.as_deref(),
         identity_revision,
     )
+}
+
+pub(crate) fn normalize_native_base_url(protocol: &str, native_base_url: &str) -> String {
+    if protocol != "anthropic" {
+        return native_base_url.to_string();
+    }
+    let trimmed = native_base_url.trim().trim_end_matches('/');
+    if trimmed.is_empty() || trimmed.ends_with("/v1") {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}/v1")
 }
 
 fn parse_endpoints(raw: Option<&str>) -> Vec<String> {
@@ -558,6 +573,26 @@ mod tests {
         assert_eq!(id.native_endpoints, vec!["chat_completions", "responses"]);
     }
 
+    /// 反向锁（StepFun 接入）：共享的 legacy openai 推断分支（非 api.openai.com
+    /// 一律 custom，T02 规则）不得因新厂商预设而被改坏——revision-0 且 type=openai、
+    /// base_url 指向 StepFun 主机的行，读时仍推断为 provider=custom。这条断言锁的
+    /// 是「不改共享分支」这一决定本身。
+    ///
+    /// executor 附注：legacy openai 型行按协议派生 `chat_completions`
+    /// （infer_legacy 的 "openai" 臂写死 ChatCompletions，见上文分支）；
+    /// `fallback_chat` 只在 unknown/custom type 兜底臂出现。本测试不改该行为，
+    /// 只是如实固定它。
+    #[test]
+    fn openai_stepfun_host_revision_zero_stays_custom() {
+        let id = resolve_channel_identity(&row("openai", "https://api.stepfun.com/v1", 0));
+        assert_eq!(id.protocol, "openai");
+        assert_eq!(id.provider, "custom");
+        assert_eq!(id.native_base_url, "https://api.stepfun.com/v1");
+        assert_eq!(id.native_endpoints, vec!["chat_completions"]);
+        assert_eq!(id.executor_kind, "chat_completions");
+        assert!(id.inferred);
+    }
+
     #[test]
     fn ollama_trailing_slash_v1_does_not_produce_v1_api_chat() {
         // "…:11434/v1/" (trailing slash after /v1) must collapse to the root,
@@ -743,7 +778,10 @@ mod tests {
         let id = resolve_channel_identity(&r);
         assert_eq!(id.protocol, "anthropic");
         assert_eq!(id.provider, "zhipu");
-        assert_eq!(id.native_base_url, "https://open.bigmodel.cn/api/anthropic");
+        assert_eq!(
+            id.native_base_url,
+            "https://open.bigmodel.cn/api/anthropic/v1"
+        );
         assert!(!id.inferred);
     }
 

@@ -16,7 +16,6 @@ export function LoginPage() {
     setPending(true);
     setError(null);
     try {
-      //TODO:直接访问 127.0.0.1:8777/auth/login
       const result = await login(username.trim(), password);
       navigate(result.must_change_password ? "/change-password" : "/", {
         replace: true,
@@ -34,13 +33,13 @@ export function LoginPage() {
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
             <img
               src="/logo.png"
-              alt="DamaoAPI"
+              alt="DaMaoAPI"
               className="h-full w-full object-cover"
             />
           </div>
           <div className="text-center">
             <h1 className="text-xl font-bold tracking-tight text-slate-900">
-              DamaoAPI
+              DaMaoAPI
             </h1>
             <p className="mt-1 text-xs text-slate-500">Web 管理面板登录</p>
           </div>

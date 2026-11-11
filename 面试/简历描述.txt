@@ -24,8 +24,8 @@ DamaoAPI｜本地大模型 API 网关（桌面端 + 无头服务）
 知识库侧支持 PDF 解析与页面渲染、多语言 tree-sitter 代码切分，以及在上游未返回 usage 时用 tiktoken 估算 token。
 
 ChatBox  ──sk-damao-aaa──┐
-NextChat ──sk-damao-bbb──┼──→ WaLiAPI ──sk-openai-xxx──→ OpenAI
-WaLiCode ──sk-damao-ccc──┘    （密钥映射 + 配额 + 审计）
+NextChat ──sk-damao-bbb──┼──→ DaMaoAPI ──sk-openai-xxx──→ OpenAI
+DaMaoCode ──sk-damao-ccc──┘    （密钥映射 + 配额 + 审计）
 每个下游应用持有独立的网关密钥，上游真实 Key 只存在网关本地：
 隔离：吊销某个网关密钥不影响其他应用
 计量：每个密钥独立的 quota_used 计数
@@ -134,7 +134,7 @@ POST /v1/responses 这是 OpenAI Responses API 的接口路径。、
 
 
 
-为什么 WaLiAPI 选择在网关层做协议转换，而不是让下游应用各自适配不同供应商的 API 格式？
+为什么 DaMaoAPI 选择在网关层做协议转换，而不是让下游应用各自适配不同供应商的 API 格式？
 
 提示：考虑 N×M 的适配矩阵复杂度、维护成本、以及网关层统一转换后新增协议只需加转换层的扩展性优势。
 

@@ -26,6 +26,7 @@ import { LoginModal } from "../components/auth/LoginModal";
 import { ModelSyncModal } from "../components/auth/ModelSyncModal";
 import { ProviderPills } from "../components/auth/ProviderPills";
 import { ChannelTabs } from "../components/layout/ChannelTabs";
+import { ResetCreditDialog } from "../components/auth/ResetCreditDialog";
 
 type Confirmation = { kind: "delete"; account: AuthAccount };
 
@@ -167,6 +168,9 @@ function providerMark(provider: AuthProviderInfo) {
   if (provider.id === "kimi" || provider.iconKey === "moonshot") return "☾";
   if (provider.id === "gemini" || provider.iconKey === "google") return "G";
   if (provider.id === "grok" || provider.iconKey === "grok") return "✦";
+  if (provider.id === "workbuddy" || provider.iconKey === "workbuddy")
+    return "W";
+  if (provider.id === "qoder" || provider.iconKey === "qoder") return "Q";
   return "⌘";
 }
 
@@ -190,7 +194,11 @@ function EmptyAccountSlot({
         ? "通过 Antigravity OAuth 完成 Google 授权；旧 Gemini CLI 凭据需重新登录"
         : provider.id === "grok"
           ? "设备码授权：在浏览器确认后返回。"
-          : "浏览器 OAuth 登录（PKCE）或从本机 ~/.codex/auth.json 导入";
+          : provider.id === "workbuddy"
+            ? "打开 WorkBuddy 登录页，在浏览器确认授权后返回。"
+            : provider.id === "qoder"
+              ? "设备码授权：在浏览器完成 Qoder 登录后返回；也可导入 pt- 个人令牌。"
+              : "浏览器 OAuth 登录（PKCE）或从本机 ~/.codex/auth.json 导入";
   return (
     <section className="flex min-h-80 flex-col items-center justify-center rounded-[24px] border border-dashed border-border bg-card/50 p-6 text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-success/10 text-xl font-bold text-success">
@@ -306,6 +314,7 @@ export function AuthChannelsPage() {
     message: string;
   } | null>(null);
   const [channelTabRefreshKey, setChannelTabRefreshKey] = useState(0);
+  const [resetAccount, setResetAccount] = useState<AuthAccount | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -337,7 +346,11 @@ export function AuthChannelsPage() {
           ? "Antigravity"
           : selectedProvider === "grok"
             ? "Grok"
-            : "Codex",
+            : selectedProvider === "workbuddy"
+              ? "WorkBuddy"
+              : selectedProvider === "qoder"
+                ? "Qoder"
+                : "Codex",
     iconKey:
       selectedProvider === "kimi"
         ? "moonshot"
@@ -345,20 +358,32 @@ export function AuthChannelsPage() {
           ? "google"
           : selectedProvider === "grok"
             ? "grok"
-            : "codex",
+            : selectedProvider === "workbuddy"
+              ? "workbuddy"
+              : selectedProvider === "qoder"
+                ? "qoder"
+                : "codex",
     loginMode:
-      selectedProvider === "kimi" || selectedProvider === "grok"
+      selectedProvider === "kimi" ||
+      selectedProvider === "grok" ||
+      selectedProvider === "workbuddy" ||
+      selectedProvider === "qoder"
         ? "device_code"
         : "browser_callback",
     loginMethods:
-      selectedProvider === "kimi" || selectedProvider === "grok"
+      selectedProvider === "kimi" ||
+      selectedProvider === "grok" ||
+      selectedProvider === "workbuddy" ||
+      selectedProvider === "qoder"
         ? ["device_code" as const]
         : selectedProvider === "gemini"
           ? ["browser_callback" as const]
           : ["browser_callback" as const, "device_code" as const],
-    supportsImport: selectedProvider === "codex",
+    supportsImport:
+      selectedProvider === "codex" || selectedProvider === "qoder",
     supportsExport: selectedProvider === "codex",
-    supportsQuota: selectedProvider === "codex",
+    supportsQuota:
+      selectedProvider === "codex" || selectedProvider === "gemini",
   };
 
   // The pill selects which provider's accounts are shown.  `load()` re-fetches
@@ -510,6 +535,9 @@ export function AuthChannelsPage() {
       setSelectedProvider(account.provider);
       setShowLogin(true);
     },
+    onReset: () => setResetAccount(account),
+    onToggleMapping: (name: string, target: string, currentlyOff: boolean) =>
+      void handleToggleMapping(account, name, target, currentlyOff),
   });
 
   const handleReorder = async (orderedIds: string[]) => {
@@ -523,6 +551,37 @@ export function AuthChannelsPage() {
     } catch (_) {
       setNotice({ kind: "error", message: "排序保存失败，已恢复原有顺序。" });
       await load(false);
+    }
+  };
+
+  // 映射对快捷开启/关闭（迁移 042）：乐观更新 + 即时保存，失败回滚
+  const handleToggleMapping = async (
+    account: AuthAccount,
+    name: string,
+    target: string,
+    currentlyOff: boolean,
+  ) => {
+    const current = account.model_mapping_disabled ?? [];
+    const next = currentlyOff
+      ? current.filter((d) => !(d[0] === name && d[1] === target))
+      : [
+          ...current.filter((d) => !(d[0] === name && d[1] === target)),
+          [name, target],
+        ];
+    setAccounts((prev) =>
+      prev.map((a) =>
+        a.id === account.id ? { ...a, model_mapping_disabled: next } : a,
+      ),
+    );
+    try {
+      await authApi.updateMappingDisabled(account.id, next);
+    } catch (_) {
+      setAccounts((prev) =>
+        prev.map((a) =>
+          a.id === account.id ? { ...a, model_mapping_disabled: current } : a,
+        ),
+      );
+      setNotice({ kind: "error", message: "切换映射状态失败，已恢复原状。" });
     }
   };
 
@@ -838,10 +897,23 @@ export function AuthChannelsPage() {
                 onSync={actions.onSync}
                 onExport={actions.onExport}
                 onRelogin={actions.onRelogin}
+                onToggleMapping={actions.onToggleMapping}
+                onReset={actions.onReset}
               />
             );
           })}
         </div>
+      )}
+      {resetAccount && (
+        <ResetCreditDialog
+          account={resetAccount}
+          onClose={() => setResetAccount(null)}
+          listCredits={authApi.listResetCredits}
+          consumeCredit={(id, creditId, operationId) =>
+            authApi.consumeResetCredit(id, creditId, operationId)
+          }
+          onCompleted={() => load(false)}
+        />
       )}
       {showLogin && (
         <LoginModal

@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn malicious_filenames_cannot_escape_kb_directory() {
-        let data_dir = Path::new("/waliapi-data");
+        let data_dir = Path::new("/damaoapi-data");
         let kb_files_root = data_dir.join("kb_files");
         for original in [
             "../../../evil.pdf",

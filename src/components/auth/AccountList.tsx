@@ -3,6 +3,9 @@ import { Fragment, useState } from "react";
 import type { ReactNode } from "react";
 import type { AuthAccount, AuthQuotaState, AuthQuotaWindow, AuthModelState } from "../../types";
 import { quotaDisplayState } from "./quotaDisplay";
+import { QuotaBlock } from "./QuotaBlock";
+import { MappingChips } from "../MappingChips";
+import { ResetCreditIcon } from "./ResetCreditIcon";
 
 const WINDOW_MINUTES = {
   fiveHours: 5 * 60,
@@ -21,6 +24,9 @@ type AccountActions = {
   onSync: () => void;
   onExport: () => void;
   onRelogin: () => void;
+  /** 映射对快捷开启/关闭（迁移 042） */
+  onToggleMapping: (from: string, to: string, currentlyOff: boolean) => void;
+  onReset: () => void;
 };
 
 type ActionButtonProps = {
@@ -104,17 +110,28 @@ function ModelDetails({ models }: { models: AuthModelState[] }) {
   );
 }
 
+// 列表行内图标按钮的悬浮提示样式：定位在按钮下方居中，hover 时浮现。
+// 与 SettingsPage 的 helpTooltipCls 风格保持统一，避免引入额外组件。
+const ACTION_TOOLTIP_CLS =
+  "pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-card px-2 py-1 text-[11px] leading-none text-card-foreground opacity-0 shadow-md transition-opacity group-hover/actbtn:opacity-100";
+
 function ActionButton({ label, disabled, className, onClick, children }: ActionButtonProps) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      className={className}
-    >
-      {children}
-    </button>
+    <span className="group/actbtn relative inline-flex">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        title={label}
+        className={className}
+      >
+        {children}
+      </button>
+      <span role="tooltip" className={ACTION_TOOLTIP_CLS}>
+        {label}
+      </span>
+    </span>
   );
 }
 
@@ -127,10 +144,11 @@ function RowActions({ account, actions }: { account: AuthAccount; actions: Accou
         <ActionButton label="重新登录" onClick={actions.onRelogin} disabled={actions.pending} className="rounded-lg p-1.5 text-primary hover:bg-primary/10 disabled:opacity-50"><KeyRound size={15} /></ActionButton>
       ) : (
         <>
-          {account.provider === "codex" && <ActionButton label="刷新额度" onClick={actions.onRefreshQuota} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50">{actions.quotaPending ? <Loader2 size={15} className="animate-spin" /> : <Gauge size={15} />}</ActionButton>}
+          {(account.provider === "codex" || account.provider === "gemini") && <ActionButton label="刷新额度" onClick={actions.onRefreshQuota} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:opacity-50">{actions.quotaPending ? <Loader2 size={15} className="animate-spin" /> : <Gauge size={15} />}</ActionButton>}
           <ActionButton label="刷新令牌" onClick={actions.onRefresh} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50">{actions.pending && !actions.quotaPending ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}</ActionButton>
           <ActionButton label="同步模型" onClick={actions.onSync} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"><RotateCw size={15} /></ActionButton>
-          {account.provider === "codex" && <ActionButton label="导出 JSON" onClick={actions.onExport} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"><Download size={15} /></ActionButton>}
+      {account.provider === "codex" && !account.disabled && account.status !== "invalid" && <ActionButton label="重置额度" onClick={actions.onReset} disabled={actions.pending} className="group/reset relative rounded-lg border border-border bg-white p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"><span className="pointer-events-none absolute -top-9 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-800 px-2 py-1 text-[11px] font-medium text-white group-hover/reset:block">重置额度</span><ResetCreditIcon size={17} /></ActionButton>}
+      {account.provider === "codex" && <ActionButton label="导出 JSON" onClick={actions.onExport} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"><Download size={15} /></ActionButton>}
         </>
       )}
       <ActionButton label="编辑账号" onClick={actions.onEdit} disabled={actions.pending} className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"><Edit3 size={15} /></ActionButton>
@@ -235,9 +253,9 @@ export function AccountList({ accounts, actionFor, onReorder }: { accounts: Auth
 
                 {/* 额度信息 */}
                 <div className="hidden items-center gap-4 lg:flex">
-                  <QuotaCell quota={account.quota} target={WINDOW_MINUTES.fiveHours} label="5H" />
-                  <QuotaCell quota={account.quota} target={WINDOW_MINUTES.week} label="周" />
-                  <QuotaCell quota={account.quota} target={WINDOW_MINUTES.month} label="月" />
+                  {account.provider === "gemini"
+                    ? <span className="text-xs text-muted-foreground">{account.quota ? `模型额度 ${account.quota.limits.length} 项` : "额度未刷新"}</span>
+                    : <><QuotaCell quota={account.quota} target={WINDOW_MINUTES.fiveHours} label="5H" /><QuotaCell quota={account.quota} target={WINDOW_MINUTES.week} label="周" /><QuotaCell quota={account.quota} target={WINDOW_MINUTES.month} label="月" /></>}
                 </div>
 
                 {/* 调度信息 */}
@@ -255,13 +273,20 @@ export function AccountList({ accounts, actionFor, onReorder }: { accounts: Auth
                 </div>
               </div>
 
-              {/* 展开区域 */}
+              {/* 展开区域（内部交互不触发行点击折叠） */}
               {expanded && (
-                <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+                <div className="mt-3 space-y-3 border-t border-slate-100 pt-3" onClick={(e) => e.stopPropagation()}>
+                  {account.provider === "gemini" && account.quota && <QuotaBlock quota={account.quota} modelQuotas />}
                   <div>
                     <div className="mb-1.5 text-xs font-semibold text-slate-500">可用模型 ({account.models.length})</div>
                     <ModelDetails models={account.models} />
                   </div>
+                  {account.model_mapping && Object.keys(account.model_mapping).length > 0 && (
+                    <div>
+                      <div className="mb-1.5 text-xs font-semibold text-slate-500">映射模型</div>
+                      <MappingChips mapping={account.model_mapping} disabledPairs={account.model_mapping_disabled} onToggle={actions.onToggleMapping} />
+                    </div>
+                  )}
                   <div className="flex items-center gap-4 text-xs text-slate-500">
                     <span className="text-slate-400">最近刷新：</span>
                     <span>{displayTime(account.last_refreshed_at) || "未刷新"}</span>

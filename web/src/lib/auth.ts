@@ -1,6 +1,6 @@
 /** Web 管理面板会话管理：localStorage 存 token（API 用），Cookie 由后端 Set-Cookie（SSE 用）。 */
 
-const TOKEN_KEY = "damao_admin_token";
+const TOKEN_KEY = "damaoapi_admin_token";
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);

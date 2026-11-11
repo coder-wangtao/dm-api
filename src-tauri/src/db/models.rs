@@ -17,6 +17,11 @@ pub struct ChannelApiKey {
 /// Input for creating/updating a channel API key entry.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChannelApiKeyInput {
+    /// 已存在从 Key 的数据库 ID（编辑保存时由前端回传）。列表 DTO 的 api_key
+    /// 是掩码值，更新路径据此把「值仍为该 ID 存量掩码」的提交识别为未修改，
+    /// 用库中真实值替换，避免掩码串覆盖真实 Key（仅更新路径消费此字段）。
+    #[serde(default)]
+    pub id: Option<String>,
     pub api_key: String,
     #[serde(default)]
     pub weight: Option<i64>,
@@ -73,17 +78,133 @@ pub struct Channel {
     pub last_probe_ok: Option<i64>,
     #[sqlx(default)]
     pub probe_latency_ms: Option<i64>,
+    /// 主 Key 是否参与负载均衡调度（迁移 044）。Some(0) = 停用；
+    /// None/Some(1) = 启用。None 兼容只迁移到早期版本的集成测试行。
+    #[sqlx(default)]
+    pub api_key_enabled: Option<i64>,
 }
 
 impl Channel {
+    /// 主 Key（channels.api_key）是否参与调度（迁移 044 列 api_key_enabled）。
+    /// None（早期迁移的测试行/历史数据）视为启用，保持向后兼容。
+    pub fn primary_key_enabled(&self) -> bool {
+        self.api_key_enabled.unwrap_or(1) != 0
+    }
+
+    /// 返回规范化但尚未应用禁用列表的原始模型映射，供管理面与导出使用。
+    pub fn normalized_model_mapping(&self) -> serde_json::Value {
+        let mut mapping: serde_json::Value =
+            serde_json::from_str(&self.model_mapping).unwrap_or_default();
+        normalize_model_mapping(&mut mapping);
+        mapping
+    }
+
+    /// 返回规范化后的禁用映射对，供管理面与导出使用。
+    pub fn normalized_model_mapping_disabled(&self) -> serde_json::Value {
+        let mut disabled =
+            serde_json::from_str::<serde_json::Value>(if self.model_mapping_disabled.is_empty() {
+                "[]"
+            } else {
+                &self.model_mapping_disabled
+            })
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+        normalize_model_mapping_disabled(&mut disabled);
+        disabled
+    }
+
     /// 解析 `model_mapping` 并剔除被关闭的映射对（迁移 041）。
     /// 返回「当前生效」的映射 JSON；路由匹配、上游模型解析、
     /// `/v1/models` 聚合都必须使用本方法而非直接读原始列。
     pub fn active_model_mapping(&self) -> serde_json::Value {
-        let mapping: serde_json::Value =
-            serde_json::from_str(&self.model_mapping).unwrap_or_default();
-        filter_disabled_mapping(mapping, &self.model_mapping_disabled)
+        let mapping = self.normalized_model_mapping();
+        let disabled = self.normalized_model_mapping_disabled();
+        filter_disabled_mapping(
+            mapping,
+            &serde_json::to_string(&disabled).unwrap_or_else(|_| "[]".to_owned()),
+        )
     }
+}
+
+/// 规范化模型映射 JSON 中的模型名。
+///
+/// * 去除 key 与字符串 value 两端空格；
+/// * 删除空 key 与去空格后为空的 value；
+/// * 数组 value 逐项处理，只剩一项时折叠为字符串。
+pub fn normalize_model_mapping(mapping: &mut serde_json::Value) {
+    let Some(obj) = mapping.as_object_mut() else {
+        return;
+    };
+    let keys: Vec<String> = obj.keys().cloned().collect();
+    let mut trimmed_entries: Vec<(String, serde_json::Value)> = Vec::new();
+    for key in &keys {
+        let trimmed_key = key.trim().to_string();
+        if trimmed_key.is_empty() {
+            obj.remove(key);
+            continue;
+        }
+        if let Some(value) = obj.remove(key) {
+            let new_value = match value {
+                serde_json::Value::String(s) => {
+                    let ts = s.trim().to_string();
+                    if ts.is_empty() {
+                        continue;
+                    }
+                    serde_json::Value::String(ts)
+                }
+                serde_json::Value::Array(arr) => {
+                    let trimmed: Vec<serde_json::Value> = arr
+                        .into_iter()
+                        .filter_map(|v| {
+                            v.as_str()
+                                .map(|s| {
+                                    let ts = s.trim().to_string();
+                                    if ts.is_empty() {
+                                        None
+                                    } else {
+                                        Some(serde_json::Value::String(ts))
+                                    }
+                                })
+                                .unwrap_or(Some(v))
+                        })
+                        .collect();
+                    match trimmed.len() {
+                        0 => continue,
+                        1 => trimmed.into_iter().next().unwrap(),
+                        _ => serde_json::Value::Array(trimmed),
+                    }
+                }
+                other => other,
+            };
+            trimmed_entries.push((trimmed_key, new_value));
+        }
+    }
+    for (k, v) in trimmed_entries {
+        obj.insert(k, v);
+    }
+}
+
+/// 去除禁用映射对两端空格，并删除空映射对。
+pub fn normalize_model_mapping_disabled(mapping: &mut serde_json::Value) {
+    let Some(pairs) = mapping.as_array_mut() else {
+        return;
+    };
+    pairs.retain_mut(|pair| {
+        let Some(pair) = pair.as_array_mut() else {
+            return true;
+        };
+        for value in pair.iter_mut() {
+            if let Some(name) = value.as_str() {
+                *value = serde_json::Value::String(name.trim().to_owned());
+            }
+        }
+        pair.len() == 2
+            && pair.iter().all(|value| {
+                value
+                    .as_str()
+                    .map(|name| !name.trim().is_empty())
+                    .unwrap_or(true)
+            })
+    });
 }
 
 /// 从映射 JSON 中剔除被关闭的 [from, to] 对。
@@ -187,6 +308,9 @@ pub struct CreateChannelInput {
     // as the same draft was tested at least once. Legacy payloads omit them. ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_run_id: Option<String>,
+    /// 本次按端点选择的测试模型，仅校验回执，不持久化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_models: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -238,6 +362,9 @@ pub struct UpdateChannelInput {
     // --- T07 draft-test receipt (see CreateChannelInput). ---
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_run_id: Option<String>,
+    /// 本次按端点选择的测试模型，仅校验回执，不持久化。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_models: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,6 +421,9 @@ pub struct ImportChannelInput {
     pub last_test_at: Option<String>,
     #[serde(default)]
     pub last_test_ok: Option<i64>,
+    /// 主 Key 是否参与负载均衡（迁移 044；v1 文件缺省 = 启用）。
+    #[serde(default)]
+    pub api_key_enabled: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -414,12 +544,31 @@ pub struct AuthAccount {
     pub quota_json: Option<String>,
     pub model_states_json: String,
     pub model_mapping_json: String,
+    /// 被关闭的映射对（迁移 042）：JSON 数组，元素为 [from, to]。
+    /// 空数组 = 全部映射开启。`#[sqlx(default)]` 兼容仅迁移到旧版本的测试库。
+    #[sqlx(default)]
+    pub model_mapping_disabled: String,
     pub attributes_json: String,
     pub payload_json: String,
     pub last_refreshed_at: Option<String>,
     pub last_models_sync_at: Option<String>,
     pub next_refresh_after: Option<String>,
     pub next_retry_after: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// 重置卡消费的本地审计状态。完整卡 ID 永不落库。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AuthResetOperation {
+    pub id: String,
+    pub account_id: String,
+    pub credit_id_hash: String,
+    pub redeem_request_id: String,
+    pub status: String,
+    pub upstream_code: Option<String>,
+    pub error_class: Option<String>,
+    pub quota_refresh_status: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -441,6 +590,38 @@ impl AuthAccount {
             return Ok(serde_json::json!({}));
         }
         serde_json::from_str(&self.model_mapping_json)
+    }
+
+    /// 返回规范化但尚未应用禁用列表的原始模型映射，供管理面使用。
+    pub fn normalized_model_mapping(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut mapping = self.model_mapping()?;
+        normalize_model_mapping(&mut mapping);
+        Ok(mapping)
+    }
+
+    /// 返回规范化后的禁用映射对，供管理面使用。
+    pub fn normalized_model_mapping_disabled(&self) -> serde_json::Value {
+        let mut disabled =
+            serde_json::from_str::<serde_json::Value>(if self.model_mapping_disabled.is_empty() {
+                "[]"
+            } else {
+                &self.model_mapping_disabled
+            })
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+        normalize_model_mapping_disabled(&mut disabled);
+        disabled
+    }
+
+    /// 解析 `model_mapping` 并剔除被关闭的映射对（迁移 042，与渠道
+    /// `Channel::active_model_mapping` 对齐）。路由匹配、别名目标解析、
+    /// `/v1/models` 聚合都必须使用本方法而非直接读原始列。
+    pub fn active_model_mapping(&self) -> serde_json::Value {
+        let mapping = self.normalized_model_mapping().unwrap_or_default();
+        let disabled = self.normalized_model_mapping_disabled();
+        filter_disabled_mapping(
+            mapping,
+            &serde_json::to_string(&disabled).unwrap_or_else(|_| "[]".to_owned()),
+        )
     }
 }
 
@@ -507,6 +688,14 @@ pub struct RequestLog {
     pub upstream_type: String,
     /// Prompt tokens served from upstream cache (migration 026).
     pub cached_tokens: i64,
+    /// 调用来源：请求来自哪个下游接入软件（从请求头识别的友好名称，
+    /// 迁移 047）。历史行为 NULL，展示为 "-"。
+    pub client_name: Option<String>,
+    /// 首字耗时（毫秒，迁移 048）：流式为首个含内容的下游帧到达时刻，
+    /// 非流式为上游响应首包时刻。历史行/失败行为 NULL。
+    pub ttft_ms: Option<i64>,
+    /// 上游物理尝试次数（迁移 048）。>1 表示发生过重试/故障切换。
+    pub attempts: i64,
 }
 
 /// Lightweight row used by the audit-log list. Large request/response bodies
@@ -550,6 +739,12 @@ pub struct RequestLogSummary {
     pub client_cancelled: Option<i64>,
     pub stream_committed: Option<i64>,
     pub upstream_type: String,
+    /// 调用来源（迁移 047）：下游接入软件的友好名称，历史行为 NULL。
+    pub client_name: Option<String>,
+    /// 首字耗时（迁移 048）。历史行为 NULL。
+    pub ttft_ms: Option<i64>,
+    /// 上游尝试次数（迁移 048）。历史行为 0。
+    pub attempts: i64,
     pub detail_level: String,
     pub started_at: Option<String>,
     pub request_body_bytes: i64,
@@ -601,6 +796,9 @@ impl Default for RequestLog {
             stream_committed: None,
             upstream_type: "channel".into(),
             cached_tokens: 0,
+            client_name: None,
+            ttft_ms: None,
+            attempts: 0,
         }
     }
 }
@@ -621,6 +819,13 @@ pub struct DashboardStats {
     pub total_api_keys: i64,
     pub total_requests: i64,
     pub total_tokens: i64,
+    pub total_knowledge_bases: i64,
+    pub total_kb_documents: i64,
+    pub total_kb_chunks: i64,
+    pub total_wiki_projects: i64,
+    pub total_wiki_pages: i64,
+    /// 今日平均首字耗时（毫秒，迁移 048）。
+    pub avg_ttft_ms: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -685,6 +890,31 @@ pub struct TokenTrendPoint {
     pub request_count: i64,
 }
 
+/// 单日 token 消耗聚合（热力图数据源，按 UTC 天分桶）。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct DailyTokenPoint {
+    /// YYYY-MM-DD（UTC 天）
+    pub day: String,
+    pub total_tokens: i64,
+    pub request_count: i64,
+}
+
+/// 单条请求对 `usage_stats` 的累加增量(迁移 046)。由 create_log 漏斗在
+/// 同一事务内 UPSERT,日志清理不触碰此表,统计因此不受审计日志保留期影响。
+#[derive(Debug, Clone)]
+pub struct UsageStatsDelta {
+    pub hour: String, // YYYY-MM-DDTHH:00:00.000Z(UTC 小时桶)
+    pub model: String,
+    pub channel_id: String, // '' 表示无渠道(Auth 账号等)
+    pub api_key_id: String, // '' 表示无 Key
+    pub success: bool,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub total_tokens: i64,
+    pub cached_tokens: i64,
+    pub duration_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RequestSecurityFinding {
     pub id: String,
@@ -700,6 +930,62 @@ pub struct RequestSecurityFinding {
     pub evidence_hash: Option<String>,
     pub action: Option<String>,
     pub created_at: String,
+}
+
+/// 一次请求的按消息分类 token 拆分（迁移 048）。
+/// kind ∈ system|tools|injected|assistant|tool_result|chat。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LogPromptPart {
+    pub log_id: String,
+    pub kind: String,
+    pub items: i64,
+    /// 校准后 token（无上游真实用量时等于 est_tokens）。
+    pub tokens: i64,
+    /// 纯本地估算 token。
+    pub est_tokens: i64,
+}
+
+/// 一次请求的某次上游物理尝试明细（迁移 048）。
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct LogAttempt {
+    pub log_id: String,
+    pub seq: i64,
+    pub channel_id: Option<String>,
+    pub channel_name: Option<String>,
+    pub upstream_model: Option<String>,
+    pub status_code: Option<i64>,
+    pub outcome: Option<String>,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub is_final: i64,
+    pub created_at: String,
+}
+
+/// 写入用（无自增 id）。
+#[derive(Debug, Clone)]
+pub struct NewLogPromptPart {
+    pub log_id: String,
+    pub kind: String,
+    pub items: i64,
+    pub tokens: i64,
+    pub est_tokens: i64,
+}
+
+/// 写入用（无自增 id）。
+#[derive(Debug, Clone)]
+pub struct NewLogAttempt {
+    pub log_id: String,
+    pub seq: i64,
+    pub channel_id: Option<String>,
+    pub channel_name: Option<String>,
+    pub upstream_model: Option<String>,
+    pub status_code: Option<i64>,
+    pub outcome: Option<String>,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub is_final: bool,
 }
 
 #[cfg(test)]
@@ -808,6 +1094,24 @@ mod mapping_disabled_tests {
     }
 
     #[test]
+    fn normalize_model_mapping_trims_keys_and_values() {
+        let mut mapping = serde_json::json!({
+            " alias ": " upstream-a ",
+            " array ": [" upstream-a ", " upstream-b ", " ", 1],
+            " empty ": " ",
+            " ": "ignored"
+        });
+        crate::db::models::normalize_model_mapping(&mut mapping);
+        assert_eq!(mapping["alias"], "upstream-a");
+        assert_eq!(
+            mapping["array"],
+            serde_json::json!(["upstream-a", "upstream-b", 1])
+        );
+        assert!(mapping.get("empty").is_none());
+        assert!(mapping.get(" ").is_none());
+    }
+
+    #[test]
     fn active_model_mapping_excludes_disabled_pairs() {
         let mut ch = Channel {
             id: "c1".into(),
@@ -837,6 +1141,7 @@ mod mapping_disabled_tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         };
         assert_eq!(ch.active_model_mapping()["auto"], "m-b");
 
@@ -846,5 +1151,10 @@ mod mapping_disabled_tests {
             ch.active_model_mapping()["auto"],
             serde_json::json!(["m-a", "m-b"])
         );
+
+        // 历史数据即使保存了首尾空格，也必须按规范化后的名称参与路由。
+        ch.model_mapping = serde_json::json!({" auto ": [" m-a ", " m-b "]}).to_string();
+        ch.model_mapping_disabled = r#"[[" auto "," m-a "]]"#.into();
+        assert_eq!(ch.active_model_mapping()["auto"], "m-b");
     }
 }

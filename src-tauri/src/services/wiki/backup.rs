@@ -289,7 +289,7 @@ fn parse_backup(bytes: &[u8]) -> Result<ParsedBackup, String> {
     let meta: MetaInfo = {
         let mut file = archive
             .by_name("meta.json")
-            .map_err(|_| "备份缺少 meta.json，不是 WaLiAPI Wiki 备份".to_string())?;
+            .map_err(|_| "备份缺少 meta.json，不是 DaMaoAPI Wiki 备份".to_string())?;
         let mut text = String::new();
         std::io::Read::read_to_string(&mut file, &mut text)
             .map_err(|e| format!("读取 meta.json 失败: {e}"))?;
@@ -297,7 +297,7 @@ fn parse_backup(bytes: &[u8]) -> Result<ParsedBackup, String> {
     };
     if meta.format_version != BACKUP_FORMAT_VERSION {
         return Err(format!(
-            "备份格式版本不受支持（当前 {}, 备份 {}），请升级 WaLiAPI 后重试",
+            "备份格式版本不受支持（当前 {}, 备份 {}），请升级 DaMaoAPI 后重试",
             BACKUP_FORMAT_VERSION, meta.format_version
         ));
     }
@@ -563,7 +563,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// WALIAPI_DATA_DIR 是进程级环境变量，cargo test 并行执行时多个测试互踩
+    /// DAMAOAPI_DATA_DIR 是进程级环境变量，cargo test 并行执行时多个测试互踩
     /// 会导致数据目录指向错乱（断言假失败）。凡涉及该 env 的测试统一持此锁串行化。
     static DATA_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -608,9 +608,9 @@ mod tests {
         let pool = test_pool().await;
 
         // 数据目录指向独立临时目录，避免污染真实 wiki 数据
-        let data_root = std::env::temp_dir().join(format!("waliapi-wiki-backup-{}", Uuid::new_v4()));
+        let data_root = std::env::temp_dir().join(format!("damaoapi-wiki-backup-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&data_root).unwrap();
-        std::env::set_var("WALIAPI_DATA_DIR", &data_root);
+        std::env::set_var("DAMAOAPI_DATA_DIR", &data_root);
 
         // 1) 建项目
         let repo = WikiRepository::new(pool.clone());
@@ -792,9 +792,9 @@ mod tests {
         assert!(err.contains("zip"), "错误应说明非 zip: {err}");
 
         // 伪造 zip：只含 files/，缺 meta.json
-        let data_root = std::env::temp_dir().join(format!("waliapi-wiki-backup-{}", Uuid::new_v4()));
+        let data_root = std::env::temp_dir().join(format!("damaoapi-wiki-backup-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&data_root).unwrap();
-        std::env::set_var("WALIAPI_DATA_DIR", &data_root);
+        std::env::set_var("DAMAOAPI_DATA_DIR", &data_root);
         let fake = data_root.join("fake.zip");
         let file = std::fs::File::create(&fake).unwrap();
         let mut zip = zip::ZipWriter::new(file);

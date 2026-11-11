@@ -17,6 +17,8 @@ pub enum ProviderKind {
     Kimi,
     Gemini,
     Grok,
+    WorkBuddy,
+    Qoder,
     Other(String),
 }
 
@@ -27,6 +29,8 @@ impl ProviderKind {
             Self::Kimi => "kimi",
             Self::Gemini => "gemini",
             Self::Grok => "grok",
+            Self::WorkBuddy => "workbuddy",
+            Self::Qoder => "qoder",
             Self::Other(value) => value,
         }
     }
@@ -39,6 +43,8 @@ impl From<&str> for ProviderKind {
             "kimi" => Self::Kimi,
             "gemini" => Self::Gemini,
             "grok" => Self::Grok,
+            "workbuddy" => Self::WorkBuddy,
+            "qoder" => Self::Qoder,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -100,6 +106,9 @@ pub struct AuthAccountSummary {
     pub quota: Option<QuotaState>,
     pub models: ModelStates,
     pub model_mapping: serde_json::Value,
+    /// 被关闭的映射对（迁移 042）：`[[from, to], ...]`。原始列表（非过滤后），
+    /// 供前端渲染每条映射的开关状态。
+    pub model_mapping_disabled: serde_json::Value,
     pub attributes: Value,
     pub expires_at: Option<String>,
     pub has_refresh_token: bool,
@@ -124,8 +133,9 @@ impl AuthAccountSummary {
         let attributes = serde_json::from_str(&account.attributes_json)
             .map_err(|_| ProviderError::InvalidPayload)?;
         let model_mapping = account
-            .model_mapping()
+            .normalized_model_mapping()
             .map_err(|_| ProviderError::InvalidPayload)?;
+        let model_mapping_disabled = account.normalized_model_mapping_disabled();
         Ok(Self {
             id: account.id.clone(),
             provider: account.provider.clone(),
@@ -138,6 +148,7 @@ impl AuthAccountSummary {
             quota,
             models,
             model_mapping,
+            model_mapping_disabled,
             attributes,
             expires_at: payload
                 .get("expires_at")
@@ -218,6 +229,50 @@ pub struct RefreshedPayload {
     pub last_refreshed_at: Option<String>,
     pub next_refresh_after: Option<String>,
     pub next_retry_after: Option<String>,
+}
+
+/// Codex 重置卡的安全摘要。`id` 仅作为本次页面操作的上游选择值，
+/// 不会写入日志或数据库；持久化层只保存其单向哈希。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetCredit {
+    pub id: String,
+    pub reset_type: String,
+    pub status: String,
+    pub granted_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetCreditsSnapshot {
+    pub available_count: Option<i64>,
+    pub credits: Vec<ResetCredit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResetCreditCode {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+impl ResetCreditCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::NothingToReset => "nothing_to_reset",
+            Self::NoCredit => "no_credit",
+            Self::AlreadyRedeemed => "already_redeemed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResetCreditOutcome {
+    pub code: ResetCreditCode,
+    pub windows_reset: i64,
 }
 
 /// Where a login result should land.

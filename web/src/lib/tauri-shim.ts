@@ -5,10 +5,7 @@
  */
 import { clearToken, getToken } from "./auth";
 
-export async function invoke<T>(
-  cmd: string,
-  args?: Record<string, unknown>,
-): Promise<T> {
+export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Requested-With": "XMLHttpRequest",

@@ -202,6 +202,20 @@ pub async fn cleanup_expired_logs(
         .bind(&cutoff)
         .execute(&mut *tx)
         .await?;
+        let parts = sqlx::query(
+            "DELETE FROM log_prompt_parts WHERE log_id IN \
+             (SELECT id FROM request_logs WHERE created_at < ? LIMIT 500)",
+        )
+        .bind(&cutoff)
+        .execute(&mut *tx)
+        .await?;
+        let attempts = sqlx::query(
+            "DELETE FROM log_attempts WHERE log_id IN \
+             (SELECT id FROM request_logs WHERE created_at < ? LIMIT 500)",
+        )
+        .bind(&cutoff)
+        .execute(&mut *tx)
+        .await?;
         let rows = sqlx::query(
             "DELETE FROM request_logs WHERE id IN \
              (SELECT id FROM request_logs WHERE created_at < ? LIMIT 500)",
@@ -211,7 +225,7 @@ pub async fn cleanup_expired_logs(
         .await?;
         tx.commit().await?;
         deleted += rows.rows_affected();
-        let _ = (findings, segments);
+        let _ = (findings, segments, parts, attempts);
         if rows.rows_affected() == 0 {
             break;
         }
@@ -223,6 +237,16 @@ pub async fn run_maintenance_loop(pool: SqlitePool, settings: SettingsStore) {
     apply_settings(&settings);
     let run = || async {
         let policy = policy_from_settings(&settings);
+        // 历史统计续接(迁移 046):表空时从现存 request_logs 回填一次,幂等。
+        // 放在自动清理之前执行,失败仅告警不阻断维护循环。
+        if policy.retention_days != 0 {
+            if let Err(error) = crate::db::repository::Repository::new(pool.clone())
+                .backfill_usage_stats_if_empty()
+                .await
+            {
+                tracing::warn!(%error, "用量统计历史回填失败");
+            }
+        }
         if let Err(error) = cleanup_expired_logs(&pool, policy.retention_days).await {
             tracing::warn!(%error, "审计日志自动清理失败");
         }

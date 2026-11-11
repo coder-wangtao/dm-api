@@ -1,4 +1,4 @@
-//! MCP 管理工具：让外部 AI Agent 通过 WaLiAPI 的 /mcp 以对话方式完成
+//! MCP 管理工具：让外部 AI Agent 通过 DaMaoAPI 的 /mcp 以对话方式完成
 //! Link（软件对接）实例的配置——发现连接器、导入 OpenAPI、创建/更新/删除实例。
 //!
 //! 安全边界：API Key（scoped）与 MCP token 全量模式均可操作（产品约定：API Key

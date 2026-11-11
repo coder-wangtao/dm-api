@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn preserves_text_within_limit() {
-        assert_eq!(truncate_utf8("DamaoAPI", 7), "DamaoAPI");
-        assert_eq!(truncate_utf8("DamaoAPI", 16), "DamaoAPI");
+        assert_eq!(truncate_utf8("DaMaoAPI", 7), "DaMaoAPI");
+        assert_eq!(truncate_utf8("DaMaoAPI", 16), "DaMaoAPI");
     }
 }

@@ -5,7 +5,7 @@
 //! - 写侧：激活窗口 → Cmd+F 搜索联系人 → 剪贴板粘贴（规避 CJK 键入问题）→ 回车发送
 //!
 //! 前置条件（桌面端 UI 有引导）：
-//! - WaLiAPI 需要被授予「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）
+//! - DaMaoAPI 需要被授予「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）
 //! - 微信需保持登录
 //!
 //! 风险：微信界面结构随版本变化可能导致搜索/发送流程失效；`send_text` 属高危写，
@@ -73,7 +73,7 @@ async fn run_ui_script(script: String) -> Result<(), String> {
     if out.success {
         Ok(())
     } else if out.stderr.contains("not allowed assistive access") {
-        Err("系统拒绝辅助功能访问：请在 系统设置 → 隐私与安全性 → 辅助功能 中授权 WaLiAPI，然后重试".into())
+        Err("系统拒绝辅助功能访问：请在 系统设置 → 隐私与安全性 → 辅助功能 中授权 DaMaoAPI，然后重试".into())
     } else {
         Err(format!("UI 脚本执行失败: {}", out.stderr))
     }
@@ -346,7 +346,7 @@ impl SoftwareConnector for WeChatConnector {
                         || err.contains("-10004")
                         || err.contains("-25211")
                     {
-                        return Err("系统拒绝辅助功能访问：请在 系统设置 → 隐私与安全性 → 辅助功能 中授权运行 WaLiAPI 的终端/应用，然后重试".into());
+                        return Err("系统拒绝辅助功能访问：请在 系统设置 → 隐私与安全性 → 辅助功能 中授权运行 DaMaoAPI 的终端/应用，然后重试".into());
                     }
                     if err.contains("WECHAT_NO_WINDOW") {
                         return Err("微信没有打开的主窗口（可能仅驻留菜单栏）：请调用 launch 工具后再试，或打开微信主窗口".into());

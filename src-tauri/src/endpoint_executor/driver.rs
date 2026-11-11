@@ -29,12 +29,14 @@ use crate::endpoint_executor::{
 };
 use crate::security;
 use crate::security::gate::AuditedRequest;
+use crate::services::knowledge::budget::{self, BudgetElapsed};
 use crate::utils;
 use axum::body::Body;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{self, SecondsFormat, Utc};
+use chrono::{self, DateTime, SecondsFormat, Utc};
 use futures_util::StreamExt;
+use rand::Rng;
 use rand::SeedableRng;
 use serde_json::json;
 use std::collections::HashMap;
@@ -76,27 +78,38 @@ fn extract_reasoning_effort(audited: &AuditedRequest) -> Option<String> {
 /// weighted sampling without replacement.  The returned `Channel` copies are
 /// intentionally request-local: credential values never enter PreparedAttempt,
 /// request logs, or tracing fields.
-async fn channel_key_slots(channel: &Channel, repo: &Arc<Repository>) -> Vec<Channel> {
+/// The primary key participates only when enabled (config `api_key_enabled`,
+/// absent = enabled).  Returns an EMPTY vec when the channel has no enabled
+/// credential at all — the caller must skip / fail over the candidate.
+async fn channel_key_slots(channel: &Channel, repo: &Repository) -> Vec<Channel> {
     let extra_keys = match repo.get_channel_api_keys(&channel.id).await {
         Ok(keys) => keys
             .into_iter()
             .filter(|k| k.status == 1)
             .collect::<Vec<_>>(),
-        Err(_) => return vec![channel.clone()],
+        // DB 读取失败：保守降级为「无额外 Key」，主 Key 开关仍然生效。
+        Err(_) => Vec::new(),
     };
+    let primary_ok = !channel.api_key.is_empty() && channel.primary_key_enabled();
     if extra_keys.is_empty() {
-        return vec![channel.clone()];
+        return if primary_ok {
+            vec![channel.clone()]
+        } else {
+            Vec::new()
+        };
     }
     // Build weighted pool: primary key (weight = channel.weight) + extras.
     let mut pool: Vec<(String, i64)> = Vec::new();
-    if !channel.api_key.is_empty() {
+    if primary_ok {
         pool.push((channel.api_key.clone(), channel.weight.max(1)));
     }
     for k in &extra_keys {
         pool.push((k.api_key.clone(), k.weight.max(1)));
     }
     if pool.is_empty() {
-        return vec![channel.clone()];
+        // 主 Key 与全部额外 Key 均被停用（或 Key 全为空且主 Key 停用）：
+        // 渠道无可用凭证，返回空让调用方换下一个候选。
+        return Vec::new();
     }
     // Duplicate values are one credential slot, not two chances to send the
     // same secret. Preserve the first configured weight for deterministic
@@ -126,28 +139,72 @@ async fn channel_key_slots(channel: &Channel, repo: &Arc<Repository>) -> Vec<Cha
 /// Try every frozen credential slot only while the failure is retryable.
 /// This makes capacity envelopes useful for a channel with multiple keys while
 /// retaining the route planner's terminal/auth boundaries.
-async fn dispatch_channel_with_key_failover(
+pub(crate) async fn dispatch_channel_with_key_failover(
     endpoint: EndpointKind,
     attempt: &crate::core::attempt::PreparedAttempt,
     channel: &Channel,
     identity: &crate::core::channel_identity::ChannelIdentity,
     safe_headers: &[(String, String)],
     query: Option<&str>,
-    repo: &Arc<Repository>,
+    repo: &Repository,
 ) -> crate::core::attempt::AttemptResult {
-    let slots = channel_key_slots(channel, repo).await;
+    let mut slots = channel_key_slots(channel, repo).await;
+    slots.truncate(3);
+    let slot_count = slots.len();
     let mut last = None;
     // Keep credential expansion bounded by the same conservative default as
     // RoutePlan's per-group budget. The planner still owns cross-candidate and
     // total-attempt limits; this cap prevents a channel with dozens of keys
     // from bypassing those limits in one closure invocation.
-    for slot in slots.into_iter().take(3) {
-        let result =
-            dispatch_executor(endpoint, attempt, &slot, identity, safe_headers, query).await;
+    for (slot_no, slot) in slots.into_iter().enumerate() {
+        if let Some(active) = budget::current() {
+            if let Err(elapsed) = active.check() {
+                return crate::core::attempt::AttemptResult::Failure(budget_failure(elapsed));
+            }
+        }
+        let mut trace =
+            PhysicalAttemptTrace::new(attempt, slot_no + 1, Some(identity.identity_revision));
+        let result = match budget::run(
+            Duration::from_secs(slot.timeout_secs.max(0) as u64),
+            Box::pin(dispatch_executor(
+                endpoint,
+                attempt,
+                &slot,
+                identity,
+                safe_headers,
+                query,
+            )),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(elapsed) => crate::core::attempt::AttemptResult::Failure(budget_failure(elapsed)),
+        };
+        trace.finish(&result);
         match result {
             crate::core::attempt::AttemptResult::Failure(ref failure)
-                if failure.failure_class == FailureClass::Retryable =>
+                if failure.failure_class == FailureClass::Retryable
+                    && !(budget::current().is_some()
+                        && (matches!(failure.status_code, Some(402 | 504 | 499))
+                            || local_failure_code(failure)
+                                .is_some_and(|code| code != "upstream_transport_failed"))) =>
             {
+                // 可选 RAG 预算内的 Key 轮换也遵守 Retry-After；最后一个 Key
+                // 的等待由计划层负责，避免同一次失败等待两遍。
+                if budget::current().is_some() && slot_no + 1 < slot_count {
+                    if let Some(secs) = failure.retry_after {
+                        if let Err(elapsed) = budget::run(
+                            Duration::from_secs(120),
+                            tokio::time::sleep(Duration::from_secs(secs.min(120))),
+                        )
+                        .await
+                        {
+                            return crate::core::attempt::AttemptResult::Failure(budget_failure(
+                                elapsed,
+                            ));
+                        }
+                    }
+                }
                 last = Some(result)
             }
             _ => return result,
@@ -161,6 +218,145 @@ async fn dispatch_channel_with_key_failover(
             retry_after: None,
         })
     })
+}
+
+pub(crate) fn budget_failure(elapsed: BudgetElapsed) -> AttemptFailure {
+    AttemptFailure {
+        failure_class: FailureClass::Retryable,
+        message: match elapsed {
+            BudgetElapsed::Deadline => "RAG absolute deadline exceeded",
+            BudgetElapsed::ChannelTimeout => "upstream channel timeout exceeded",
+            BudgetElapsed::Cancelled => "client cancelled RAG request",
+        }
+        .to_string(),
+        status_code: None,
+        retry_after: None,
+    }
+}
+
+/// None 表示尚未收到 HTTP 响应。只有本地构造函数可设置这些固定原因，
+/// 实际上游错误总携带 Some(status)，其自由正文不能冒充预算或传输失败。
+pub(crate) fn local_failure_code(failure: &AttemptFailure) -> Option<&'static str> {
+    if failure.status_code.is_some() {
+        return None;
+    }
+    match failure.message.as_str() {
+        "RAG absolute deadline exceeded" => Some("rag_deadline_exceeded"),
+        "upstream channel timeout exceeded" | "upstream transport timed out" => {
+            Some("model_timeout")
+        }
+        "client cancelled RAG request" => Some("client_cancelled"),
+        "upstream transport failed" => Some("upstream_transport_failed"),
+        _ => None,
+    }
+}
+
+fn failure_kind(failure: &AttemptFailure) -> &'static str {
+    if let Some(code) = local_failure_code(failure) {
+        return code;
+    }
+    match failure {
+        _ if failure.failure_class == FailureClass::ChannelAuthTerminal => "authentication_failed",
+        _ if failure.failure_class == FailureClass::UpstreamProtocolError => "protocol_failed",
+        _ if failure.status_code == Some(402)
+            || (failure.status_code == Some(429)
+                && failure.failure_class == FailureClass::CallerTerminal) =>
+        {
+            "quota_exceeded"
+        }
+        _ if failure.status_code == Some(429) => "rate_limited",
+        _ if failure.status_code == Some(504) => "upstream_timeout",
+        _ if failure.status_code.is_some_and(|status| status >= 500) => "upstream_http_5xx",
+        _ => "request_rejected",
+    }
+}
+
+pub(crate) fn local_failure_status(failure: &AttemptFailure) -> Option<u16> {
+    match local_failure_code(failure) {
+        Some("rag_deadline_exceeded" | "model_timeout") => Some(504),
+        Some("client_cancelled") => Some(499),
+        Some("upstream_transport_failed") => Some(502),
+        _ => None,
+    }
+}
+
+/// 一行对应一次真实出站尝试，只记录路由身份和 Key 序号，不记录凭据或正文。
+struct PhysicalAttemptTrace {
+    started: Instant,
+    channel_id: String,
+    upstream_model: String,
+    upstream_protocol: String,
+    identity_revision: Option<i64>,
+    attempt_no: usize,
+    key_slot: usize,
+    active: Option<budget::Budget>,
+    finished: bool,
+}
+
+impl PhysicalAttemptTrace {
+    fn new(
+        attempt: &crate::core::attempt::PreparedAttempt,
+        key_slot: usize,
+        identity_revision: Option<i64>,
+    ) -> Self {
+        let trace = Self {
+            started: Instant::now(),
+            channel_id: attempt.channel_id.clone(),
+            upstream_model: attempt.upstream_model.clone(),
+            upstream_protocol: attempt.upstream_protocol.clone(),
+            identity_revision,
+            attempt_no: attempt.attempt_no,
+            key_slot,
+            active: budget::current(),
+            finished: false,
+        };
+        tracing::info!(channel_id = %trace.channel_id, attempt_no = trace.attempt_no,
+            upstream_model = %trace.upstream_model, upstream_protocol = %trace.upstream_protocol, identity_revision = trace.identity_revision,
+            key_slot = trace.key_slot, request_id = trace.active.as_ref().map(|b| b.request_id()),
+            stage = trace.active.as_ref().map(|b| b.stage_name()), "上游物理尝试开始");
+        trace
+    }
+
+    fn finish(&mut self, result: &crate::core::attempt::AttemptResult) {
+        let (status, outcome) = match result {
+            crate::core::attempt::AttemptResult::Success(success) => (success.status, "success"),
+            crate::core::attempt::AttemptResult::Failure(failure) => (
+                local_failure_status(failure)
+                    .or(failure.status_code)
+                    .unwrap_or(502),
+                failure_kind(failure),
+            ),
+        };
+        self.record(status, outcome);
+        self.finished = true;
+    }
+
+    fn record(&self, status: u16, outcome: &str) {
+        tracing::info!(channel_id = %self.channel_id, attempt_no = self.attempt_no,
+            upstream_model = %self.upstream_model, upstream_protocol = %self.upstream_protocol, identity_revision = self.identity_revision,
+            key_slot = self.key_slot, request_id = self.active.as_ref().map(|b| b.request_id()),
+            stage = self.active.as_ref().map(|b| b.stage_name()), duration_ms = self.started.elapsed().as_millis() as u64,
+            status, outcome, "上游物理尝试终态");
+    }
+}
+
+impl Drop for PhysicalAttemptTrace {
+    fn drop(&mut self) {
+        if !self.finished {
+            let expired = self
+                .active
+                .as_ref()
+                .is_some_and(|b| b.remaining().is_zero());
+            self.record(
+                if expired { 504 } else { 499 },
+                if expired {
+                    "deadline_exceeded"
+                } else {
+                    "client_cancelled"
+                },
+            );
+        }
+    }
 }
 
 fn candidate_lookup(plan: &RoutePlan) -> HashMap<String, RouteCandidate> {
@@ -206,8 +402,8 @@ fn affects_mode_health(failure: &AttemptFailure) -> bool {
                 .starts_with("upstream first frame could not be converted"))
 }
 
-async fn record_channel_mode_outcome(
-    repo: &Arc<Repository>,
+pub(crate) async fn record_channel_mode_outcome(
+    repo: &Repository,
     channel_id: &str,
     endpoint: &str,
     is_stream: bool,
@@ -291,7 +487,6 @@ struct StreamFailureMeta {
 /// seam; factoring them into a struct would ripple through `handlers.rs` (a
 /// frozen interface) for no functional gain, so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 pub async fn route_plan_response(
     plan: RoutePlan,
     audited: &AuditedRequest,
@@ -337,6 +532,17 @@ pub(crate) async fn route_plan_response_with_auth_service(
     let query = audited.envelope.query.clone();
     let mode_health_repo = repo.clone();
     let started = Instant::now();
+    // 可观测性 048：请求级日志 id，尝试明细与最终落账行共用。
+    let request_log_id = utils::id::new_id();
+    let attempt_repo = repo.clone();
+    // 路由总览粒子（048）：请求开始事件（入站粒子 Key→网关）。
+    crate::server::event_bridge::emit_gateway_event(
+        "gw_request_start",
+        json!({
+            "api_key_name": key.name,
+            "model": audited.envelope.model,
+        }),
+    );
     let execution = crate::core::plan_executor::execute_plan(
         plan,
         audited,
@@ -347,11 +553,15 @@ pub(crate) async fn route_plan_response_with_auth_service(
             let candidate = lookup.get(&attempt.channel_id).cloned();
             let auth_service = auth_service.clone();
             let mode_health_repo = mode_health_repo.clone();
+            let attempt_repo = attempt_repo.clone();
+            let request_log_id = request_log_id.clone();
             // Clone the attempt so the returned future does not borrow it
             // (execute_plan requires a `'static`-capable executor future).
             let attempt = attempt.clone();
             async move {
-                match candidate {
+                let attempt_started = Instant::now();
+                let attempt_no = attempt.attempt_no as i64;
+                let result = match candidate {
                     Some(RouteCandidate::Channel { channel, identity }) => {
                         let result = dispatch_channel_with_key_failover(
                             endpoint,
@@ -374,13 +584,65 @@ pub(crate) async fn route_plan_response_with_auth_service(
                         result
                     }
                     Some(RouteCandidate::AuthAccount(_)) => {
-                        dispatch_auth_account_executor(endpoint, &attempt, &auth_service, &safe)
-                            .await
+                        let mut trace = PhysicalAttemptTrace::new(&attempt, 1, None);
+                        let result = match budget::run(
+                            Duration::from_secs(120),
+                            dispatch_auth_account_executor(
+                                endpoint,
+                                &attempt,
+                                &auth_service,
+                                &safe,
+                            ),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(elapsed) => crate::core::attempt::AttemptResult::Failure(
+                                budget_failure(elapsed),
+                            ),
+                        };
+                        trace.finish(&result);
+                        result
                     }
                     None => crate::core::attempt::AttemptResult::Failure(
                         missing_candidate_failure(&attempt.channel_id),
                     ),
+                };
+                // 048：每次物理尝试落明细（best-effort），最终落账行与明细
+                // 共用请求级 id，展开行可完整回放 failover 过程。
+                {
+                    let (status_code, outcome, error_message, is_final) = match &result {
+                        crate::core::attempt::AttemptResult::Success(s) => (
+                            Some(s.status as i64),
+                            Some("success".to_string()),
+                            None,
+                            true,
+                        ),
+                        crate::core::attempt::AttemptResult::Failure(f) => (
+                            local_failure_status(f).or(f.status_code).map(|s| s as i64),
+                            Some(failure_kind(f).to_string()),
+                            Some(f.message.clone()),
+                            false,
+                        ),
+                    };
+                    let row = crate::db::models::NewLogAttempt {
+                        log_id: request_log_id,
+                        seq: attempt_no,
+                        channel_id: Some(attempt.channel_id.clone()),
+                        channel_name: Some(attempt.channel_name.clone()),
+                        upstream_model: Some(attempt.upstream_model.clone()),
+                        status_code,
+                        outcome,
+                        error_message,
+                        duration_ms: Some(attempt_started.elapsed().as_millis() as i64),
+                        ttft_ms: None,
+                        is_final,
+                    };
+                    if let Err(e) = attempt_repo.append_log_attempt(&row).await {
+                        eprintln!("[WARN] append_log_attempt failed: {e}");
+                    }
                 }
+                result
             }
         },
     )
@@ -400,6 +662,7 @@ pub(crate) async fn route_plan_response_with_auth_service(
             duration_ms,
             sanitized_log_body,
             trace_id,
+            Some(&request_log_id),
         )
         .await;
     }
@@ -410,6 +673,40 @@ pub(crate) async fn route_plan_response_with_auth_service(
     let mut builder = axum::response::Response::builder()
         .status(code)
         .header(header::CONTENT_TYPE, "application/json");
+    // 只使用执行器的类型化失败原因，不从上游正文/自定义错误码猜测超时。
+    // 耗尽预算后的 HTTP 仍由 AttemptFlow 决定（Retryable => 502）。
+    if let Some(failure) = &execution.last_failure {
+        let local_code = match failure {
+            _ if local_failure_code(failure).is_some() => local_failure_code(failure),
+            _ if failure.failure_class == FailureClass::ChannelAuthTerminal => {
+                Some("upstream_authentication_failed")
+            }
+            _ if failure.failure_class == FailureClass::Retryable
+                && failure.status_code == Some(504) =>
+            {
+                Some("model_timeout")
+            }
+            _ if budget::current().is_some() => match failure.status_code {
+                Some(429) if failure.failure_class == FailureClass::CallerTerminal => {
+                    Some("upstream_quota_exceeded")
+                }
+                Some(429) => Some("upstream_rate_limited"),
+                Some(402) => Some("upstream_quota_exceeded"),
+                _ if failure.failure_class == FailureClass::UpstreamProtocolError => {
+                    Some("upstream_protocol_error")
+                }
+                _ if failure.failure_class == FailureClass::Retryable => {
+                    Some("upstream_unavailable")
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(code) = local_code {
+            builder = builder
+                .extension(crate::services::knowledge::model_client::GatewayFailureCode(code));
+        }
+    }
     for (name, value) in &execution.response_headers {
         if name.eq_ignore_ascii_case("content-type")
             || name.eq_ignore_ascii_case("content-length")
@@ -433,6 +730,421 @@ pub(crate) async fn route_plan_response_with_auth_service(
         })
 }
 
+#[cfg(test)]
+mod rag_budget_tests {
+    use super::*;
+    use crate::core::{feature_flags::FeatureFlags, route_plan::authorize_and_plan};
+    use crate::db::models::{ChannelApiKeyInput, CreateApiKeyInput, CreateChannelInput};
+    use crate::security::gate::{DownstreamProtocol, RequestEnvelope, RequestFeatures};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct SlowUpstream {
+        base: String,
+        calls: Arc<AtomicUsize>,
+        closed: Arc<AtomicUsize>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for SlowUpstream {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl SlowUpstream {
+        async fn start(
+            status: u16,
+            delay_headers: bool,
+            delay: Duration,
+            extra_headers: &str,
+            body: &str,
+        ) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/v1", listener.local_addr().unwrap());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let closed = Arc::new(AtomicUsize::new(0));
+            let (received, disconnected) = (calls.clone(), closed.clone());
+            let (extra_headers, body) = (extra_headers.to_string(), body.to_string());
+            let task = tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    let (received, disconnected) = (received.clone(), disconnected.clone());
+                    let (extra_headers, body) = (extra_headers.clone(), body.clone());
+                    tokio::spawn(async move {
+                        let mut buffer = Vec::new();
+                        let mut bytes = [0u8; 4096];
+                        loop {
+                            let count = socket.read(&mut bytes).await.unwrap_or(0);
+                            if count == 0 {
+                                return;
+                            }
+                            buffer.extend_from_slice(&bytes[..count]);
+                            let Some(end) = buffer.windows(4).position(|part| part == b"\r\n\r\n")
+                            else {
+                                continue;
+                            };
+                            let headers = String::from_utf8_lossy(&buffer[..end]);
+                            let content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().unwrap_or(0))
+                                })
+                                .unwrap_or(0);
+                            if buffer.len() >= end + 4 + content_length {
+                                break;
+                            }
+                        }
+                        received.fetch_add(1, Ordering::SeqCst);
+                        let response_headers = format!("HTTP/1.1 {status} mock\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n", body.len());
+                        if !delay_headers
+                            && socket.write_all(response_headers.as_bytes()).await.is_err()
+                        {
+                            return;
+                        }
+                        if !delay.is_zero() {
+                            tokio::select! {
+                                _ = tokio::time::sleep(delay) => {},
+                                _ = socket.read(&mut bytes) => {
+                                    disconnected.fetch_add(1, Ordering::SeqCst);
+                                    return;
+                                },
+                            }
+                        }
+                        if delay_headers
+                            && socket.write_all(response_headers.as_bytes()).await.is_err()
+                        {
+                            return;
+                        }
+                        let _ = socket.write_all(body.as_bytes()).await;
+                    });
+                }
+            });
+            Self {
+                base,
+                calls,
+                closed,
+                task,
+            }
+        }
+    }
+
+    async fn setup(base: &str) -> (Arc<Repository>, ApiKey, RoutePlan, AuditedRequest) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let repo = Arc::new(Repository::new(pool));
+        let key = repo
+            .create_api_key(&CreateApiKeyInput {
+                name: "budget-test".into(),
+                key: None,
+                allowed_models: None,
+                allowed_channels: None,
+                denied_models: None,
+                denied_channels: None,
+                quota_limit: None,
+                expires_at: None,
+            })
+            .await
+            .unwrap();
+        let mut channels = Vec::new();
+        for priority in [10, 5] {
+            channels.push(
+                repo.create_channel(&CreateChannelInput {
+                    name: format!("upstream-{priority}"),
+                    channel_type: "openai".into(),
+                    base_url: base.into(),
+                    api_key: "test-primary".into(),
+                    models: vec!["embedding-test".into()],
+                    priority: Some(priority),
+                    protocol: Some("openai".into()),
+                    provider: Some("custom".into()),
+                    native_base_url: Some(base.into()),
+                    native_endpoints: Some(vec!["embeddings".into()]),
+                    timeout_secs: Some(30),
+                    extra_keys: Some(vec![ChannelApiKeyInput {
+                        api_key: "test-secondary".into(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                })
+                .await
+                .unwrap(),
+            );
+        }
+        let body = json!({"model":"embedding-test", "input":["query"], "encoding_format":"float"});
+        let plan = authorize_and_plan(
+            &key,
+            "embedding-test",
+            EndpointKind::Embeddings,
+            &channels,
+            &FeatureFlags::all_on(),
+            &body,
+            &mut rand::rngs::StdRng::seed_from_u64(7),
+        )
+        .unwrap();
+        let audit = AuditedRequest {
+            envelope: RequestEnvelope {
+                downstream_protocol: DownstreamProtocol::Embeddings,
+                endpoint: "/v1/embeddings".into(),
+                original_json: body.clone(),
+                safe_forward_headers: vec![],
+                query: None,
+                model: "embedding-test".into(),
+                stream: false,
+                trace_id: Some("budget-test".into()),
+                client_name: None,
+            },
+            forward_json: body.clone(),
+            sanitized_log_json: body,
+            body_hash: "h".into(),
+            body_len: 0,
+            audit_result: security::SecurityScanResult::default(),
+            request_features: RequestFeatures::default(),
+            security_settings: security::SecuritySettings::default(),
+        };
+        (repo, key, plan, audit)
+    }
+
+    #[derive(Clone, Copy)]
+    struct RequestElapsed(Duration);
+
+    async fn request(mock: &SlowUpstream, timeout_ms: Option<u64>) -> Response {
+        let (repo, key, plan, audit) = setup(&mock.base).await;
+        let future = route_plan_response(
+            plan,
+            &audit,
+            &key,
+            &[],
+            "embedding",
+            &repo,
+            "{}",
+            Some("budget-test".into()),
+        );
+        // 仅测量预算建立后的请求；真实数据库迁移不属于请求预算。
+        let started = Instant::now();
+        let mut response = match timeout_ms {
+            Some(timeout) => {
+                budget::Budget::new(timeout, "budget-test")
+                    .scope(future)
+                    .await
+            }
+            None => future.await,
+        };
+        response
+            .extensions_mut()
+            .insert(RequestElapsed(started.elapsed()));
+        response
+    }
+
+    const VECTOR: &str = r#"{"data":[{"index":0,"embedding":[1.0,0.0]}],"usage":{"prompt_tokens":1,"total_tokens":1}}"#;
+
+    async fn warm_request_path() {
+        // 独立快速上游预热真实客户端；目标请求的 150ms 只测试已经可达的网络路径。
+        let warmup = SlowUpstream::start(200, false, Duration::ZERO, "", VECTOR).await;
+        assert_eq!(request(&warmup, None).await.status(), StatusCode::OK);
+        assert_eq!(warmup.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn rag_deadline_covers_headers_and_body_without_key_or_channel_replay() {
+        warm_request_path().await;
+        for delay_headers in [true, false] {
+            let mock =
+                SlowUpstream::start(200, delay_headers, Duration::from_secs(2), "", VECTOR).await;
+            let response = request(&mock, Some(150)).await;
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            let elapsed = response.extensions().get::<RequestElapsed>().unwrap().0;
+            assert!(elapsed < Duration::from_secs(1), "请求耗时：{elapsed:?}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                mock.closed.load(Ordering::SeqCst),
+                1,
+                "deadline must drop the upstream TCP response"
+            );
+            assert_eq!(
+                response
+                    .extensions()
+                    .get::<crate::services::knowledge::model_client::GatewayFailureCode>()
+                    .unwrap()
+                    .0,
+                "rag_deadline_exceeded"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rag_retry_after_shares_the_same_deadline_for_rate_limits_and_server_errors() {
+        warm_request_path().await;
+        for status in [429, 503] {
+            let mock = SlowUpstream::start(
+                status,
+                false,
+                Duration::ZERO,
+                "Retry-After: 10\r\n",
+                r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+            )
+            .await;
+            let response = request(&mock, Some(150)).await;
+            assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+            let elapsed = response.extensions().get::<RequestElapsed>().unwrap().0;
+            assert!(elapsed < Duration::from_secs(1), "请求耗时：{elapsed:?}");
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn rag_auth_and_structured_quota_rejections_are_terminal() {
+        for (status, body, expected_code) in [
+            (
+                200,
+                r#"{"error":{"code":"insufficient_quota"}}"#,
+                "upstream_quota_exceeded",
+            ),
+            (
+                401,
+                r#"{"error":{"message":"untrusted secret"}}"#,
+                "upstream_authentication_failed",
+            ),
+            (403, "{}", "upstream_authentication_failed"),
+            (402, "{}", "upstream_quota_exceeded"),
+            (
+                429,
+                r#"{"error":{"code":"insufficient_quota"}}"#,
+                "upstream_quota_exceeded",
+            ),
+        ] {
+            let mock = SlowUpstream::start(status, false, Duration::ZERO, "", body).await;
+            let response = request(&mock, Some(1_000)).await;
+            assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                response
+                    .extensions()
+                    .get::<crate::services::knowledge::model_client::GatewayFailureCode>()
+                    .unwrap()
+                    .0,
+                expected_code
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_rag_future_closes_the_upstream_and_never_replays() {
+        let mock = SlowUpstream::start(200, false, Duration::from_secs(2), "", VECTOR).await;
+        let (repo, key, plan, audit) = setup(&mock.base).await;
+        let task = tokio::spawn(async move {
+            budget::Budget::new(1_000, "budget-test")
+                .scope(route_plan_response(
+                    plan,
+                    &audit,
+                    &key,
+                    &[],
+                    "embedding",
+                    &repo,
+                    "{}",
+                    Some("budget-test".into()),
+                ))
+                .await
+        });
+        for _ in 0..100 {
+            if mock.calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(mock.closed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn channel_cap_is_distinct_from_the_longer_rag_deadline() {
+        let mock = SlowUpstream::start(200, false, Duration::from_secs(3), "", VECTOR).await;
+        let (repo, key, mut plan, audit) = setup(&mock.base).await;
+        for group in &mut plan.groups {
+            for candidate in &mut group.candidates {
+                if let RouteCandidate::Channel { channel, .. } = &mut candidate.candidate {
+                    channel.timeout_secs = 1;
+                }
+            }
+        }
+        let response = budget::Budget::new(2_000, "budget-test")
+            .scope(route_plan_response(
+                plan,
+                &audit,
+                &key,
+                &[],
+                "embedding",
+                &repo,
+                "{}",
+                Some("budget-test".into()),
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            response
+                .extensions()
+                .get::<crate::services::knowledge::model_client::GatewayFailureCode>()
+                .unwrap()
+                .0,
+            "model_timeout"
+        );
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn upstream_messages_cannot_spoof_local_failure_or_quota_classification() {
+        budget::Budget::new(1_000, "test")
+            .scope(async {
+                for message in [
+                    "RAG absolute deadline exceeded",
+                    "upstream transport timed out",
+                    "upstream transport failed",
+                ] {
+                    let body = json!({"error":{"message":message}}).to_string();
+                    let failure = crate::endpoint_executor::failure_from_upstream(502, &body, None);
+                    assert_eq!(local_failure_code(&failure), None);
+                }
+                let failure = crate::endpoint_executor::failure_from_upstream(
+                    429,
+                    r#"{"error":{"message":"insufficient_quota"}}"#,
+                    None,
+                );
+                assert_eq!(failure.failure_class, FailureClass::Retryable);
+                assert_eq!(
+                    local_failure_code(&budget_failure(BudgetElapsed::Deadline)),
+                    Some("rag_deadline_exceeded")
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn historical_requests_keep_success_and_existing_key_failover() {
+        let mock = SlowUpstream::start(200, false, Duration::from_millis(40), "", VECTOR).await;
+        assert_eq!(request(&mock, None).await.status(), StatusCode::OK);
+        assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
+        let rate_limited = SlowUpstream::start(429, false, Duration::ZERO, "", "{}").await;
+        assert_eq!(
+            request(&rate_limited, None).await.status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(
+            rate_limited.calls.load(Ordering::SeqCst),
+            4,
+            "two Keys on two channels retain legacy failover"
+        );
+    }
+}
+
 /// Write the RequestLog + quota for a non-stream facade execution.
 #[allow(clippy::too_many_arguments)]
 async fn write_non_stream_log(
@@ -444,6 +1156,7 @@ async fn write_non_stream_log(
     duration_ms: u64,
     sanitized_log_body: &str,
     trace_id: Option<String>,
+    preset_log_id: Option<&str>,
 ) {
     let usage = execution.usage.as_ref().map(|u| {
         (
@@ -481,7 +1194,6 @@ async fn write_non_stream_log(
 
     let is_retry = execution.attempts > 1;
     let last_failure = execution.last_failure.as_ref();
-
     // Extract response_choices from the upstream response body for audit log display.
     let response_choices = if execution.status >= 200 && execution.status < 300 {
         // OpenAI Chat Completions: extract `choices` array
@@ -536,7 +1248,9 @@ async fn write_non_stream_log(
     }
 
     let log = RequestLog {
-        id: utils::id::new_id(),
+        id: preset_log_id
+            .map(str::to_string)
+            .unwrap_or_else(utils::id::new_id),
         seq: None,
         api_key_id: Some(key.id.clone()),
         api_key_name: Some(key.name.clone()),
@@ -584,11 +1298,32 @@ async fn write_non_stream_log(
             .upstream_type
             .clone()
             .unwrap_or_else(|| "channel".to_string()),
+        client_name: audited.envelope.client_name.clone(),
+        ttft_ms: execution.ttft_ms.map(|ms| ms as i64),
+        attempts: execution.attempts as i64,
     };
     let log_id = log.id.clone();
     if let Err(e) = repo.create_log(&log).await {
         eprintln!("[WARN] create_log failed: {}", e);
     }
+    write_prompt_parts(
+        repo,
+        &log_id,
+        sanitized_log_body,
+        prompt,
+        total > 0 && prompt > 0,
+    )
+    .await;
+    // 路由总览粒子（048）：请求完成事件。
+    crate::server::event_bridge::emit_gateway_event(
+        "gw_request_done",
+        json!({
+            "api_key_name": log.api_key_name,
+            "channel_name": log.channel_name,
+            "model": log.model,
+            "status": log.status_code,
+        }),
+    );
     if let Err(e) = repo
         .create_security_findings(
             &log_id,
@@ -698,6 +1433,10 @@ async fn write_stream_precommit_failure_log_with_meta(
         upstream_type: last_attempt
             .map(|meta| meta.upstream_type.clone())
             .unwrap_or_else(|| "channel".to_string()),
+        client_name: audited.envelope.client_name.clone(),
+        // 预提交失败行无首帧/成功尝试语义，保持默认空值。
+        ttft_ms: None,
+        attempts: 0,
     };
     let log_id = log.id.clone();
     if let Err(e) = repo.create_log(&log).await {
@@ -725,7 +1464,6 @@ async fn write_stream_precommit_failure_log_with_meta(
 /// seam; factoring them into a struct would ripple through `handlers.rs` (a
 /// frozen interface), so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
 pub async fn route_stream_plan(
     plan: RoutePlan,
     audited: &AuditedRequest,
@@ -773,6 +1511,19 @@ pub(crate) async fn route_stream_plan_with_auth_service(
     let endpoint = plan.endpoint;
     let mut flow = AttemptFlow::new(plan);
     let mut last_attempt_meta: Option<StreamFailureMeta> = None;
+    // 可观测性 048：请求级计时起点（首帧耗时 / 尝试次数相对它计算）。
+    let request_started = Instant::now();
+    // 路由总览粒子（048）：流式请求开始事件。
+    crate::server::event_bridge::emit_gateway_event(
+        "gw_request_start",
+        json!({
+            "api_key_name": key.name,
+            "model": audited.envelope.model,
+        }),
+    );
+    // 请求级日志 id：本次请求的所有尝试明细（成功/失败）与最终落账行共用，
+    // log_attempts 与 request_logs 天然 1:N 关联，无孤儿行。
+    let request_log_id = utils::id::new_id();
 
     loop {
         match flow.next_step() {
@@ -854,20 +1605,51 @@ pub(crate) async fn route_stream_plan_with_auth_service(
 
                 let dispatched = match candidate {
                     Some(RouteCandidate::Channel { channel, identity }) => {
-                        let channel = channel_key_slots(&channel, repo)
-                            .await
-                            .into_iter()
-                            .next()
-                            .unwrap_or(channel);
-                        dispatch_stream_executor(
-                            endpoint,
-                            &attempt,
-                            &channel,
-                            &identity,
-                            safe_headers,
-                            query.as_deref(),
-                        )
-                        .await
+                        // 流式 pre-commit 多 Key failover：遍历该渠道所有启用的
+                        // Key slot，pre-commit 失败（尚未向下游提交任何字节）换
+                        // 下一把 Key 重试；一旦 Connected 进入提交屏障，后续错误
+                        // 不再换 Key。CallerTerminal / CommittedStreamError 换 Key
+                        // 无意义，直接终止。
+                        let mut dispatched: Option<StreamAttemptResult> = None;
+                        let mut last_failure: Option<AttemptFailure> = None;
+                        for slot in channel_key_slots(&channel, repo).await {
+                            let result = dispatch_stream_executor(
+                                endpoint,
+                                &attempt,
+                                &slot,
+                                &identity,
+                                safe_headers,
+                                query.as_deref(),
+                            )
+                            .await;
+                            match result {
+                                StreamAttemptResult::Connected(_) => {
+                                    dispatched = Some(result);
+                                    break;
+                                }
+                                StreamAttemptResult::Failure(f) => {
+                                    if f.failure_class == FailureClass::CallerTerminal
+                                        || f.failure_class == FailureClass::CommittedStreamError
+                                    {
+                                        dispatched = Some(StreamAttemptResult::Failure(f));
+                                        break;
+                                    }
+                                    last_failure = Some(f);
+                                }
+                            }
+                        }
+                        dispatched.unwrap_or_else(|| {
+                            // 主 Key 与全部额外 Key 均被停用：该候选无可用
+                            // 凭证，按可重试失败换下一个候选渠道。
+                            StreamAttemptResult::Failure(last_failure.unwrap_or_else(|| {
+                                AttemptFailure {
+                                    failure_class: FailureClass::Retryable,
+                                    message: "no enabled channel credential slot".to_string(),
+                                    status_code: Some(502),
+                                    retry_after: None,
+                                }
+                            }))
+                        })
                     }
                     Some(RouteCandidate::AuthAccount(_)) => {
                         dispatch_auth_account_stream_executor(&attempt, &auth_service, safe_headers)
@@ -880,6 +1662,32 @@ pub(crate) async fn route_stream_plan_with_auth_service(
 
                 match dispatched {
                     StreamAttemptResult::Failure(f) => {
+                        // 048：失败尝试落明细（best-effort），与最终落账行共用
+                        // 请求级 id，展开行能看到完整 failover 过程。
+                        {
+                            let failure_row = crate::db::models::NewLogAttempt {
+                                log_id: request_log_id.clone(),
+                                seq: attempt_no as i64,
+                                channel_id: last_attempt_meta
+                                    .as_ref()
+                                    .map(|meta| meta.channel_id.clone()),
+                                channel_name: last_attempt_meta
+                                    .as_ref()
+                                    .map(|meta| meta.channel_name.clone()),
+                                upstream_model: last_attempt_meta
+                                    .as_ref()
+                                    .map(|meta| meta.upstream_model.clone()),
+                                status_code: f.status_code.map(|s| s as i64),
+                                outcome: Some(failure_kind(&f).to_string()),
+                                error_message: Some(f.message.clone()),
+                                duration_ms: Some(request_started.elapsed().as_millis() as i64),
+                                ttft_ms: None,
+                                is_final: false,
+                            };
+                            if let Err(e) = repo.append_log_attempt(&failure_row).await {
+                                eprintln!("[WARN] append_log_attempt failed: {e}");
+                            }
+                        }
                         if let Some(channel_id) = health_channel_id.as_deref() {
                             record_channel_mode_outcome(
                                 repo,
@@ -1090,6 +1898,31 @@ pub(crate) async fn route_stream_plan_with_auth_service(
                         let model = audited.envelope.model.clone();
                         let upstream_model = attempt.upstream_model.clone();
                         let is_retry = attempt_no > 1;
+                        // 048：流式首帧耗时 = 首个有效 SSE 记录验证通过的时刻 -
+                        // 请求开始；尝试次数 = 本请求已执行 attempt_no。
+                        let ttft_ms = request_started.elapsed().as_millis() as i64;
+                        let attempts_total = attempt_no as i64;
+                        // 预生成日志行 id：先记 log_attempts（本次成功尝试），
+                        // 落账行复用同一 id，两者天然关联。
+                        let preset_log_id = request_log_id.clone();
+                        {
+                            let attempt_row = crate::db::models::NewLogAttempt {
+                                log_id: preset_log_id.clone(),
+                                seq: attempt_no as i64,
+                                channel_id: Some(attempt.channel_id.clone()),
+                                channel_name: Some(attempt.channel_name.clone()),
+                                upstream_model: Some(attempt.upstream_model.clone()),
+                                status_code: Some(200),
+                                outcome: Some("success".to_string()),
+                                error_message: None,
+                                duration_ms: Some(ttft_ms),
+                                ttft_ms: Some(ttft_ms),
+                                is_final: true,
+                            };
+                            if let Err(e) = repo.append_log_attempt(&attempt_row).await {
+                                eprintln!("[WARN] append_log_attempt failed: {e}");
+                            }
+                        }
 
                         // T09 (design 11.4): the observability context comes from
                         // the SAME PreparedAttempt + ChannelIdentity that produced
@@ -1134,6 +1967,9 @@ pub(crate) async fn route_stream_plan_with_auth_service(
                             upstream_endpoint,
                             upstream_type,
                             timeouts,
+                            Some(ttft_ms),
+                            attempts_total,
+                            preset_log_id,
                         );
                         let mut builder = Response::builder()
                             .status(StatusCode::OK)
@@ -1338,6 +2174,10 @@ struct StreamLogFinalizer {
     upstream_endpoint: String,
     upstream_type: String,
     started: Instant,
+    /// 首帧耗时（048）：流式首个有效 SSE 记录验证通过的时刻减 started。
+    ttft_ms: Option<i64>,
+    /// 本次请求的上游尝试次数（048）。
+    attempts: i64,
     completed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 与流泵共享的落账快照（issue #57）：取消路径读取，见 [`StreamSnapshot`]。
     snapshot: std::sync::Arc<std::sync::Mutex<StreamSnapshot>>,
@@ -1429,11 +2269,32 @@ impl StreamLogFinalizer {
             client_cancelled: Some(i64::from(client_cancelled)),
             stream_committed: Some(1),
             upstream_type: self.upstream_type.clone(),
+            client_name: self.audited.envelope.client_name.clone(),
+            ttft_ms: self.ttft_ms,
+            attempts: self.attempts,
         };
         let log_id = log.id.clone();
         if let Err(e) = self.repo.create_log(&log).await {
             eprintln!("[WARN] create_log failed: {}", e);
         }
+        write_prompt_parts(
+            &self.repo,
+            &log_id,
+            &self.sanitized_log_body,
+            usage_prompt,
+            !client_cancelled && !had_error && usage_prompt > 0,
+        )
+        .await;
+        // 路由总览粒子（048）：流式请求完成事件。
+        crate::server::event_bridge::emit_gateway_event(
+            "gw_request_done",
+            json!({
+                "api_key_name": log.api_key_name,
+                "channel_name": log.channel_name,
+                "model": log.model,
+                "status": log.status_code,
+            }),
+        );
         if let Err(e) = self
             .repo
             .create_security_findings(
@@ -1565,6 +2426,14 @@ fn stream_response_body(
     upstream_endpoint: String,
     upstream_type: String,
     timeouts: StreamTimeouts,
+    // --- 可观测性 048：首帧耗时 + 尝试次数 ---
+    // ttft：流式首个有效 SSE 记录验证通过的时刻减请求开始；
+    // attempts：本请求已执行的上游尝试次数。
+    ttft_ms: Option<i64>,
+    attempts: i64,
+    // 预生成的日志行 id：外部（route_stream_plan）用它先记 log_attempts，
+    // 落账行必须与尝试明细同一个 id。
+    preset_log_id: String,
 ) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
     let mode_for_error = mode.clone();
     let snapshot = std::sync::Arc::new(std::sync::Mutex::new(StreamSnapshot::default()));
@@ -1575,7 +2444,7 @@ fn stream_response_body(
     let resume_frames_enabled = mode_for_error == "responses"
         && crate::audit_log::current_policy().detail_level
             != crate::audit_log::LogDetailLevel::Basic;
-    let resume_log_id = utils::id::new_id();
+    let resume_log_id = preset_log_id;
     let finalizer = StreamLogFinalizer {
         repo: repo.clone(),
         log_id: resume_log_id.clone(),
@@ -1597,6 +2466,8 @@ fn stream_response_body(
         upstream_endpoint,
         upstream_type,
         started: Instant::now(),
+        ttft_ms,
+        attempts,
         completed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         snapshot: snapshot.clone(),
     };
@@ -1870,6 +2741,36 @@ async fn write_stream_log(
             response_choices,
         )
         .await;
+}
+
+/// 按消息分类的 token 拆分落库（可观测性 048，best-effort）。
+///
+/// 两阶段口径：`calibrated=true`（上游真实 prompt tokens 可用）时 tokens=校准值；
+/// 否则 tokens=est_tokens（纯估算），前端展示为"估算 ≈"。失败仅告警不阻断落账。
+async fn write_prompt_parts(
+    repo: &Arc<Repository>,
+    log_id: &str,
+    sanitized_log_body: &str,
+    real_prompt: i64,
+    calibrated: bool,
+) {
+    let body: serde_json::Value =
+        serde_json::from_str(sanitized_log_body).unwrap_or(serde_json::Value::Null);
+    let breakdown = super::prompt_classify::classify_prompt(&body);
+    let mut rows = if calibrated && real_prompt > 0 {
+        super::prompt_classify::calibrate(&breakdown, real_prompt)
+    } else {
+        super::prompt_classify::calibrate(&breakdown, breakdown.total_est())
+    };
+    for row in rows.iter_mut() {
+        row.log_id = log_id.to_string();
+        if !calibrated {
+            row.tokens = row.est_tokens;
+        }
+    }
+    if let Err(e) = repo.replace_prompt_parts(log_id, &rows).await {
+        eprintln!("[WARN] write_prompt_parts failed: {e}");
+    }
 }
 
 /// 判断这段下游字节里是否已经出现该协议的终止帧。
@@ -2170,6 +3071,9 @@ mod tests {
                 first_frame: Duration::ZERO,
                 idle: Duration::from_millis(50),
             },
+            None,
+            1,
+            "test-log".to_string(),
         );
 
         let mut bytes = Vec::new();
@@ -2213,6 +3117,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -2512,6 +3417,7 @@ mod tests {
                 model: "m".into(),
                 stream: true,
                 trace_id: None,
+                client_name: None,
             },
             forward_json: json!({"model": "m", "messages": []}),
             sanitized_log_json: json!({"model": "m", "messages": []}),
@@ -2614,6 +3520,9 @@ mod tests {
             "responses".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         ));
         while let Some(item) = stream.next().await {
             item.unwrap();
@@ -2677,6 +3586,9 @@ mod tests {
             "responses".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         ));
         stream.next().await.unwrap().unwrap();
         stream.next().await.unwrap().unwrap();
@@ -2740,6 +3652,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         ));
         while let Some(item) = stream.next().await {
             item.unwrap();
@@ -2851,6 +3766,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         );
 
         let mut bytes = Vec::new();
@@ -2961,6 +3879,7 @@ mod tests {
             response_headers: vec![],
             attempts: 1,
             duration_ms: 5,
+            ttft_ms: None,
             last_failure: None,
         };
         write_non_stream_log(
@@ -2971,6 +3890,7 @@ mod tests {
             &execution,
             5,
             "{}",
+            None,
             None,
         )
         .await;
@@ -3038,6 +3958,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         );
         let mut bytes = Vec::new();
         tokio::pin!(stream);
@@ -3092,6 +4015,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         );
 
         // 上游挂死时若实现退化回「等 EOF」，这里 10s 超时直接失败。
@@ -3158,6 +4084,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         ));
 
         // 消费两帧输出（首帧 + 含 usage 的第二帧），确保快照已更新。
@@ -3217,6 +4146,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             StreamTimeouts::default(),
+            Some(120),
+            1,
+            "test-log".to_string(),
         ));
 
         stream.next().await.unwrap().unwrap();
@@ -3276,6 +4208,9 @@ mod tests {
             "messages".to_string(),
             "channel".to_string(),
             timeouts,
+            None,
+            1,
+            "test-log".to_string(),
         );
 
         let mut bytes = Vec::new();

@@ -1,6 +1,6 @@
 //! 最小 MCP 客户端：对接外部 MCP Server（stdio / Streamable HTTP）。
 //!
-//! 供 generic_mcp 聚合连接器使用——把社区现成 MCP Server 的工具代理进 WaLiAPI 的 /mcp。
+//! 供 generic_mcp 聚合连接器使用——把社区现成 MCP Server 的工具代理进 DaMaoAPI 的 /mcp。
 //! 每次调用独立建立会话（stdio 冷启动 / HTTP 三次握手），换取无状态实现；外部 server
 //! 通常自带缓存，代价可接受。工具发现与调用都有总超时保护。
 
@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const CLIENT_INFO: &str = "waliapi-software-gateway";
+const CLIENT_INFO: &str = "damaoapi-software-gateway";
 
 #[derive(Debug, Clone)]
 pub struct McpToolInfo {

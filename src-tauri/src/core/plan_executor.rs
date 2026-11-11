@@ -15,6 +15,7 @@ use crate::core::attempt::{
 };
 use crate::core::route_plan::RoutePlan;
 use crate::security::gate::AuditedRequest;
+use crate::services::knowledge::budget;
 use rand::Rng;
 use serde::Serialize;
 use std::future::Future;
@@ -51,6 +52,9 @@ pub struct PlanExecution {
     /// Total attempts actually executed (1-based for the first).
     pub attempts: usize,
     pub duration_ms: u64,
+    /// 首包耗时（毫秒，可观测性 048）：成功尝试中首个 2xx 响应头到达的时刻
+    /// 减请求开始。非流式路径的价值有限（≈连接+上游处理），但保持字段统一。
+    pub ttft_ms: Option<u64>,
     pub last_failure: Option<AttemptFailure>,
 }
 
@@ -86,6 +90,9 @@ where
     Fut: Future<Output = AttemptResult>,
 {
     let started = Instant::now();
+    // 首包耗时（048）：第一次成功取得 AttemptResult 的时刻（无论成功失败，
+    // 记录"第一次有响应"的耗时；成功路径即最终响应的首包时间）。
+    let mut ttft_ms: Option<u64> = None;
     let mut flow = AttemptFlow::new(plan);
     // `FlowStep::Halt` only carries the terminal status/message. Retain the
     // last selected candidate so an exhausted plan preserves log metadata.
@@ -128,16 +135,20 @@ where
                 };
                 last_attempt_meta = Some(meta.clone());
                 last_attempt_codec_version = codec_version.clone();
-                let result = match built {
+                let mut result = match built {
                     // A construction failure (codec rejection) is already a
                     // full AttemptFailure carrying the rejected feature reason.
                     Err(failure) => failure,
                     Ok(attempt) => {
                         let upstream_model = attempt.upstream_model.clone();
+                        let attempt_started = Instant::now();
                         match executor(&attempt).await {
                             AttemptResult::Success(mut s) => {
                                 if s.upstream_model.is_none() {
                                     s.upstream_model = Some(upstream_model);
+                                }
+                                if ttft_ms.is_none() {
+                                    ttft_ms = Some(attempt_started.elapsed().as_millis() as u64);
                                 }
                                 return PlanExecution {
                                     status: s.status,
@@ -156,6 +167,7 @@ where
                                     response_headers: s.response_headers,
                                     attempts: attempt_no,
                                     duration_ms: started.elapsed().as_millis() as u64,
+                                    ttft_ms,
                                     last_failure: None,
                                 };
                             }
@@ -163,14 +175,52 @@ where
                         }
                     }
                 };
+                // 预算请求的超时、鉴权和额度失败直接终止，避免重复请求同一
+                // 慢上游；历史聊天和入库保持原来的候选/协议组切换规则。
+                let budget_terminal = |failure: &AttemptFailure| {
+                    budget::current().is_some()
+                        && (failure.failure_class == FailureClass::ChannelAuthTerminal
+                            || matches!(failure.status_code, Some(402 | 504 | 499))
+                            || crate::endpoint_executor::driver::local_failure_code(failure)
+                                .is_some_and(|code| code != "upstream_transport_failed"))
+                };
+                if !budget_terminal(&result)
+                    && !matches!(
+                        result.failure_class,
+                        FailureClass::CallerTerminal | FailureClass::CommittedStreamError
+                    )
+                {
+                    if let Some(secs) = result.retry_after {
+                        let secs = if budget::current().is_some() {
+                            secs.min(120)
+                        } else {
+                            secs
+                        };
+                        if let Err(elapsed) = budget::run(
+                            std::time::Duration::from_secs(120),
+                            tokio::time::sleep(std::time::Duration::from_secs(secs)),
+                        )
+                        .await
+                        {
+                            result = crate::endpoint_executor::driver::budget_failure(elapsed);
+                        }
+                    }
+                }
                 flow.record_failure(&result);
                 if result.failure_class == FailureClass::CallerTerminal
                     || result.failure_class == FailureClass::CommittedStreamError
+                    || budget_terminal(&result)
                 {
                     // Honor an explicit status_code (e.g. the T06 stub's 501);
                     // fall back to the class's canonical terminal status (400
                     // for a real caller-terminal codec rejection).
-                    let status = result.status_code.unwrap_or(terminal_status_of(&result));
+                    let status = if result.failure_class == FailureClass::ChannelAuthTerminal {
+                        terminal_status_of(&result)
+                    } else {
+                        crate::endpoint_executor::driver::local_failure_status(&result)
+                            .or(result.status_code)
+                            .unwrap_or(terminal_status_of(&result))
+                    };
                     return PlanExecution {
                         status,
                         body: serde_json::json!({ "error": { "message": result.message, "failure_class": result.failure_class.as_str() } }),
@@ -188,12 +238,9 @@ where
                         response_headers: vec![],
                         attempts: attempt_no,
                         duration_ms: started.elapsed().as_millis() as u64,
+                        ttft_ms,
                         last_failure: Some(result),
                     };
-                }
-                // Honor upstream Retry-After before the next attempt.
-                if let Some(secs) = result.retry_after {
-                    tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
                 }
                 // Otherwise loop; `flow.next_step()` applies group transition / budget.
             }
@@ -223,6 +270,7 @@ where
                     response_headers: vec![],
                     attempts: flow.attempts_used(),
                     duration_ms: started.elapsed().as_millis() as u64,
+                    ttft_ms,
                     last_failure,
                 };
             }
@@ -328,6 +376,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -342,6 +391,7 @@ mod tests {
                 model: "m".into(),
                 stream: false,
                 trace_id: None,
+                client_name: None,
             },
             forward_json: json!({ "model": "m", "messages": [] }),
             sanitized_log_json: json!({ "model": "m", "messages": [] }),

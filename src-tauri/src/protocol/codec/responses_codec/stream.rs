@@ -106,7 +106,9 @@ impl ChatToResponsesStreamDecoder {
     pub fn new(context: &ConversionContext) -> Self {
         Self {
             pending: Vec::new(),
-            state: crate::protocol::responses::StreamState::default(),
+            state: crate::protocol::responses::StreamState::with_custom_tool_names(
+                &context.custom_tool_names,
+            ),
             model: context.upstream_model.clone(),
             response_id: responses_response_id(&context.request_id),
             accumulated_content: String::new(),
@@ -262,12 +264,10 @@ impl StreamDecoder for ChatToResponsesStreamDecoder {
 /// defensive code: a standard Anthropic upstream never emits this OpenAI-specific
 /// event, and `MessagesSseState` rejects it before the Messages leg could forward
 /// it here.
-#[allow(dead_code)]
 pub struct MessagesResponsesStreamDecoder {
     messages: Box<dyn StreamDecoder + Send + Sync>,
     chat: ChatToResponsesStreamDecoder,
 }
-#[allow(dead_code)]
 impl MessagesResponsesStreamDecoder {
     pub fn boxed(context: &ConversionContext) -> Box<dyn StreamDecoder + Send + Sync> {
         Box::new(Self {

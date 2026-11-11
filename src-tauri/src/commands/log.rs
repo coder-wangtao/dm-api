@@ -45,6 +45,12 @@ pub struct LogDto {
     pub client_cancelled: Option<bool>,
     pub stream_committed: Option<bool>,
     pub upstream_type: String,
+    /// 调用来源（迁移 047）：下游接入软件的友好名称，识别不出为 null。
+    pub client_name: Option<String>,
+    /// 首字耗时（迁移 048），历史行为 null。
+    pub ttft_ms: Option<i64>,
+    /// 上游尝试次数（迁移 048），历史行为 0。
+    pub attempts: i64,
 }
 
 impl From<RequestLog> for LogDto {
@@ -89,6 +95,9 @@ impl From<RequestLog> for LogDto {
             client_cancelled: l.client_cancelled.map(|v| v == 1),
             stream_committed: l.stream_committed.map(|v| v == 1),
             upstream_type: l.upstream_type,
+            client_name: l.client_name,
+            ttft_ms: l.ttft_ms,
+            attempts: l.attempts,
         }
     }
 }
@@ -149,6 +158,9 @@ impl From<crate::db::models::RequestLogSummary> for LogSummaryDto {
             client_cancelled: s.client_cancelled.map(|v| v == 1),
             stream_committed: s.stream_committed.map(|v| v == 1),
             upstream_type: s.upstream_type,
+            client_name: s.client_name,
+            ttft_ms: s.ttft_ms,
+            attempts: s.attempts,
         };
         Self {
             log,
@@ -203,6 +215,8 @@ pub struct GetLogsInput {
     pub keyword: Option<String>,
     pub api_key_name: Option<String>,
     pub channel_name: Option<String>,
+    /// 调用来源精确匹配（快捷筛选 chips 使用，值来自 get_log_filter_options）。
+    pub client_name: Option<String>,
     pub model: Option<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
@@ -229,6 +243,7 @@ pub async fn get_logs_impl(
     let has_search = input.keyword.is_some()
         || input.api_key_name.is_some()
         || input.channel_name.is_some()
+        || input.client_name.is_some()
         || input.model.is_some()
         || input.date_from.is_some()
         || input.date_to.is_some()
@@ -240,6 +255,7 @@ pub async fn get_logs_impl(
             input.keyword.as_deref(),
             input.api_key_name.as_deref(),
             input.channel_name.as_deref(),
+            input.client_name.as_deref(),
             input.model.as_deref(),
             input.date_from.as_deref(),
             input.date_to.as_deref(),
@@ -274,6 +290,7 @@ pub async fn count_logs_impl(
         input.keyword.as_deref(),
         input.api_key_name.as_deref(),
         input.channel_name.as_deref(),
+        input.client_name.as_deref(),
         input.model.as_deref(),
         input.date_from.as_deref(),
         input.date_to.as_deref(),
@@ -282,6 +299,48 @@ pub async fn count_logs_impl(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+/// 快捷筛选选项：最近用过的调用来源（client_name）+ 全部渠道，按近 7 天
+/// 调用量倒序，供日志页一键筛选 chips 展示。空库/异常时返回空数组不报错。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LogFilterOptionDto {
+    pub name: String,
+    pub count: i64,
+}
+
+#[tauri::command]
+pub async fn get_log_filter_options(
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<LogFilterOptionsDto, String> {
+    get_log_filter_options_impl(&*state).await
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LogFilterOptionsDto {
+    /// 最近调用的来源（client_name），最多 6 个。
+    pub clients: Vec<LogFilterOptionDto>,
+    /// 渠道，最多 8 个。
+    pub channels: Vec<LogFilterOptionDto>,
+}
+
+pub async fn get_log_filter_options_impl(
+    state: &std::sync::Arc<AppState>,
+) -> Result<LogFilterOptionsDto, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let (clients, channels) = repo
+        .get_log_filter_options(7, 6, 8)
+        .await
+        .map_err(|e| e.to_string())?;
+    let to_dto = |rows: Vec<(String, i64)>| {
+        rows.into_iter()
+            .map(|(name, count)| LogFilterOptionDto { name, count })
+            .collect()
+    };
+    Ok(LogFilterOptionsDto {
+        clients: to_dto(clients),
+        channels: to_dto(channels),
+    })
 }
 
 #[tauri::command]
@@ -392,6 +451,139 @@ pub async fn delete_all_logs_impl(state: &std::sync::Arc<AppState>) -> Result<u6
     repo.delete_all_logs().await.map_err(|e| e.to_string())
 }
 
+/// 多条件组合清理日志(Task 4 颗粒度重构)。所有条件 AND 组合,空条件 = 清理全部。
+/// `clear_stats=false`(默认)只删日志,统计表不动 —— 清理不影响首页统计。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteLogsInput {
+    /// 清理该时刻之前的日志(RFC3339)。
+    pub before_date: Option<String>,
+    /// 清理该时刻之后的日志(与 before_date 组合成区间)。
+    pub after_date: Option<String>,
+    /// 保留最近 N 天,清理更早的(与 before_date 互斥,二者都传时取交集)。
+    pub keep_recent_days: Option<u64>,
+    /// 仅清理指定状态码的日志。
+    pub status_code: Option<i64>,
+    /// true=仅清理 2xx,false=仅清理非 2xx。
+    pub is_success: Option<bool>,
+    /// 仅清理指定渠道的日志。
+    pub channel_id: Option<String>,
+    /// 仅清理指定 Key 的日志。
+    pub api_key_id: Option<String>,
+    /// 仅清理指定模型的日志。
+    pub model: Option<String>,
+    /// true 时同步清除对应的 usage_stats(默认 false)。
+    pub clear_stats: Option<bool>,
+    /// true 时只返回匹配行数不执行删除,供前端确认弹窗展示预计影响。
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteLogsReport {
+    pub dry_run: bool,
+    pub matched_logs: u64,
+    pub matched_stats: u64,
+}
+
+/// 「渠道清理」tab 输入(Task 渠道清理):按渠道维度组合执行
+/// 日志清理 / 统计清理 / 失败计数重置,区别于全局日志清理。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CleanupChannelInput {
+    /// 目标渠道 ID(必填)。
+    pub channel_id: String,
+    /// 清理该时刻之前的日志/统计(RFC3339)。
+    pub before_date: Option<String>,
+    /// 清理该时刻之后的日志/统计。
+    pub after_date: Option<String>,
+    /// 保留最近 N 天,清理更早的。
+    pub keep_recent_days: Option<u64>,
+    /// true=删除该渠道日志(级联 findings/segments),不动统计。
+    pub clear_logs: Option<bool>,
+    /// true=删除该渠道 usage_stats 行,不动日志。
+    pub clear_stats: Option<bool>,
+    /// true=仅把该渠道 fail_count 置 0(请求/成功/token 不动),恢复成功率。
+    pub reset_fail: Option<bool>,
+    /// true=只返回匹配行数不执行。
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupChannelReport {
+    pub dry_run: bool,
+    pub matched_logs: u64,
+    pub matched_stats: u64,
+    pub reset_fail_rows: u64,
+}
+
+#[tauri::command]
+pub async fn cleanup_channel(
+    input: CleanupChannelInput,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<CleanupChannelReport, String> {
+    cleanup_channel_impl(&input, &*state).await
+}
+
+pub async fn cleanup_channel_impl(
+    input: &CleanupChannelInput,
+    state: &std::sync::Arc<AppState>,
+) -> Result<CleanupChannelReport, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let dry_run = input.dry_run.unwrap_or(false);
+    let (matched_logs, matched_stats, reset_fail_rows) = repo
+        .cleanup_channel(input, dry_run)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(CleanupChannelReport {
+        dry_run,
+        matched_logs,
+        matched_stats,
+        reset_fail_rows,
+    })
+}
+
+#[tauri::command]
+pub async fn delete_logs(
+    input: DeleteLogsInput,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<DeleteLogsReport, String> {
+    delete_logs_impl(&input, &*state).await
+}
+
+pub async fn delete_logs_impl(
+    input: &DeleteLogsInput,
+    state: &std::sync::Arc<AppState>,
+) -> Result<DeleteLogsReport, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let dry_run = input.dry_run.unwrap_or(false);
+    let (matched_logs, matched_stats) = repo
+        .delete_logs_matching(input, dry_run)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(DeleteLogsReport {
+        dry_run,
+        matched_logs,
+        matched_stats,
+    })
+}
+
+/// 独立清除历史统计数据(不删日志)。条件与 delete_logs 的统计侧一致。
+#[tauri::command]
+pub async fn clear_usage_stats(
+    input: DeleteLogsInput,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<u64, String> {
+    clear_usage_stats_impl(&input, &*state).await
+}
+
+pub async fn clear_usage_stats_impl(
+    input: &DeleteLogsInput,
+    state: &std::sync::Arc<AppState>,
+) -> Result<u64, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    repo.clear_usage_stats_matching(input)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LogStatsDto {
     pub date: String,
@@ -425,4 +617,97 @@ pub async fn get_log_stats_impl(
                 })
                 .collect()
         })
+}
+
+// ── 可观测性明细（迁移 048）──
+
+/// 单条日志的按消息分类 token 拆分（上下文构成卡片数据源）。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PromptPartDto {
+    pub kind: String,
+    pub items: i64,
+    /// 校准后 token（无真实用量时 = est_tokens，前端展示"估算 ≈"）。
+    pub tokens: i64,
+    /// 纯本地估算 token。
+    pub est_tokens: i64,
+    /// tokens 是否已被上游真实用量校准。
+    pub calibrated: bool,
+}
+
+#[tauri::command]
+pub async fn get_log_prompt_parts(
+    log_id: String,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<PromptPartDto>, String> {
+    get_log_prompt_parts_impl(&log_id, &*state).await
+}
+
+pub async fn get_log_prompt_parts_impl(
+    log_id: &str,
+    state: &std::sync::Arc<AppState>,
+) -> Result<Vec<PromptPartDto>, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let parts = repo
+        .get_prompt_parts(log_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(parts
+        .into_iter()
+        .map(|p| PromptPartDto {
+            calibrated: p.tokens != p.est_tokens,
+            kind: p.kind,
+            items: p.items,
+            tokens: p.tokens,
+            est_tokens: p.est_tokens,
+        })
+        .collect())
+}
+
+/// 单条日志的上游尝试明细（failover 时间线数据源）。
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LogAttemptDto {
+    pub seq: i64,
+    pub channel_id: Option<String>,
+    pub channel_name: Option<String>,
+    pub upstream_model: Option<String>,
+    pub status_code: Option<i64>,
+    pub outcome: Option<String>,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub is_final: bool,
+}
+
+#[tauri::command]
+pub async fn get_log_attempts(
+    log_id: String,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
+) -> Result<Vec<LogAttemptDto>, String> {
+    get_log_attempts_impl(&log_id, &*state).await
+}
+
+pub async fn get_log_attempts_impl(
+    log_id: &str,
+    state: &std::sync::Arc<AppState>,
+) -> Result<Vec<LogAttemptDto>, String> {
+    let repo = Repository::new(state.db.pool.clone());
+    let attempts = repo
+        .get_log_attempts(log_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(attempts
+        .into_iter()
+        .map(|a| LogAttemptDto {
+            seq: a.seq,
+            channel_id: a.channel_id,
+            channel_name: a.channel_name,
+            upstream_model: a.upstream_model,
+            status_code: a.status_code,
+            outcome: a.outcome,
+            error_message: a.error_message,
+            duration_ms: a.duration_ms,
+            ttft_ms: a.ttft_ms,
+            is_final: a.is_final == 1,
+        })
+        .collect())
 }

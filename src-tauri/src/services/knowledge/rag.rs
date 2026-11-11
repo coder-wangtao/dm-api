@@ -13,7 +13,7 @@ use crate::settings_store::SettingsStore;
 use sqlx::SqlitePool;
 use std::{future::Future, sync::Arc, time::Instant};
 
-/// RAG: Retrieve relevant chunks, then generate answer via WaLiAPI proxy
+/// RAG: Retrieve relevant chunks, then generate answer via DaMaoAPI proxy
 /// Enhanced with conversation history, token limit fallback, and configurable search modes.
 pub async fn ask(
     pool: &SqlitePool,
@@ -2038,7 +2038,7 @@ mod rewrite_tests {
     #[test]
     fn query_rewrite_gate_defaults_off_and_key_is_stable() {
         let dir =
-            std::env::temp_dir().join(format!("waliapi-rewrite-gate-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("damaoapi-rewrite-gate-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = crate::settings_store::SettingsStore::file(dir.join("settings.json"));
 
@@ -2056,8 +2056,8 @@ mod rewrite_tests {
     #[test]
     fn extract_rewrite_query_takes_first_line_and_trims_quotes() {
         assert_eq!(
-            extract_rewrite_query("WaLiAPI 网关如何配置渠道配额\n（改写说明）"),
-            Some("WaLiAPI 网关如何配置渠道配额".to_string())
+            extract_rewrite_query("DaMaoAPI 网关如何配置渠道配额\n（改写说明）"),
+            Some("DaMaoAPI 网关如何配置渠道配额".to_string())
         );
         assert_eq!(
             extract_rewrite_query("  \"带引号的查询\"  "),
@@ -2086,12 +2086,12 @@ mod rewrite_tests {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         let settings = SettingsStore::file(
-            std::env::temp_dir().join(format!("waliapi-rewrite-test-{}", uuid::Uuid::new_v4())),
+            std::env::temp_dir().join(format!("damaoapi-rewrite-test-{}", uuid::Uuid::new_v4())),
         );
         let history = vec![
             ConversationMessage {
                 role: "user".into(),
-                content: "WaLiAPI 的渠道配额怎么配？".into(),
+                content: "DaMaoAPI 的渠道配额怎么配？".into(),
             },
             ConversationMessage {
                 role: "assistant".into(),

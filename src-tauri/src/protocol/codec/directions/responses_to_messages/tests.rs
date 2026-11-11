@@ -92,6 +92,31 @@ fn request_keeps_untyped_non_messages_rejected() {
 }
 
 #[test]
+fn request_rejects_additional_tools_without_lossless_conversion() {
+    let error = encode_request(
+        &serde_json::json!({"input":[{"type": "additional_tools", "tools": [{"type": "custom", "name": "exec"}]}]}),
+        "m",
+    )
+    .unwrap_err();
+    assert!(error.json_pointers.iter().any(|p| p == "/input/0/type"));
+}
+
+#[test]
+fn request_drops_empty_additional_tools_registry() {
+    let (encoded, context) = encode_request(
+        &serde_json::json!({"input":[
+            {"type": "additional_tools", "tools": []},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}
+        ]}),
+        "m",
+    )
+    .unwrap();
+
+    assert_eq!(encoded["messages"].as_array().unwrap().len(), 1);
+    assert!(context.normalized.iter().any(|p| p == "/input/0"));
+}
+
+#[test]
 fn response_maps_tool_input() {
     let c = ConversionContext::new("r", "m", false);
     let out=decode_messages_response(&serde_json::json!({"type":"message","content":[{"type":"tool_use","id":"call_1","name":"weather","input":{"city":"Shanghai"}}],"stop_reason":"tool_use","usage":{"input_tokens":2,"output_tokens":1}}),&c).unwrap();
@@ -175,4 +200,8 @@ fn stream_emits_complete_responses_lifecycle_for_text_reasoning_and_tool() {
     assert!(output.contains("\"text\":\"hello\""));
     assert!(output.contains("\"text\":\"think\""));
     assert!(output.contains("\"arguments\":\"{}\""));
+    assert!(output.contains("\"id\":\"msg_0\""));
+    assert!(output.contains("\"id\":\"rs_1\""));
+    assert!(output.contains("\"id\":\"fc_2\""));
+    assert!(output.contains("\"call_id\":\"call_1\""));
 }

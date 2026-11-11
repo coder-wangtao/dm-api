@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 /// MCP server instructions — agent 首次连接时注入 system prompt
-const MCP_INSTRUCTIONS: &str = r#"# WaLiAPI RAG — 本地向量检索
+const MCP_INSTRUCTIONS: &str = r#"# DaMaoAPI RAG — 本地向量检索
 
 RAG 已预建索引：文档已解析、分块、向量化并存入本地 SQLite + HNSW 索引。
 资料检索在本地执行，查询向量可能调用已配置的模型；实际耗时取决于渠道与索引状态。
@@ -602,7 +602,7 @@ async fn dispatch_scoped(
             req.id.clone(),
             serde_json::json!({
                 "protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
-                "serverInfo": {"name": "WaLiAPI Knowledge Base", "version": env!("CARGO_PKG_VERSION")},
+                "serverInfo": {"name": "DaMaoAPI Knowledge Base", "version": env!("CARGO_PKG_VERSION")},
                 "instructions": "仅可查询已授权且已开启 MCP 的知识库。先 list_knowledge_bases 获取 kb_id；问答需指定已授权的 model。"
             }),
         ),
@@ -912,7 +912,7 @@ async fn dispatch_jsonrpc_async(
                     "tools": {}
                 },
                 "serverInfo": {
-                    "name": "WaLiAPI Knowledge Base",
+                    "name": "DaMaoAPI Knowledge Base",
                     "version": "0.1.0"
                 },
                 "instructions": MCP_INSTRUCTIONS

@@ -61,7 +61,7 @@ fn responses_input_message_carries_reasoning_content_directly() {
 #[test]
 fn responses_reasoning_round_trip_to_chat() {
     // Simulates the full Codex repro: upstream DeepSeek streams reasoning_content,
-    // DamaoAPI emits a `reasoning` item in Responses API format, then the next
+    // DaMaoAPI emits a `reasoning` item in Responses API format, then the next
     // turn's input (echoing that reasoning item) converts back to Chat with
     // `reasoning_content` so DeepSeek accepts the request.
     use crate::protocol::responses::{
@@ -145,6 +145,71 @@ fn responses_to_openai_drops_tool_choice_when_no_function_tools() {
         converted.get("tools").is_none(),
         "non-function tools must not be forwarded"
     );
+}
+
+#[test]
+fn responses_to_openai_rejects_unknown_input_item_instead_of_dropping_it() {
+    let body = serde_json::json!({
+        "model": "m",
+        "input": [{"type": "future_vendor_item", "payload": {"x": 1}}]
+    });
+    let error = responses_to_openai(&body).unwrap_err();
+    assert!(error.json_pointers.contains(&"/input/0/type".to_string()));
+}
+
+#[test]
+fn responses_to_openai_rejects_item_without_role_instead_of_dropping_it() {
+    let body = serde_json::json!({
+        "model": "m",
+        "input": [{"type": "item", "payload": {"x": 1}}]
+    });
+    let error = responses_to_openai(&body).unwrap_err();
+    assert!(error.json_pointers.contains(&"/input/0/type".to_string()));
+}
+
+#[test]
+fn responses_to_openai_rejects_additional_tools_input_item() {
+    let body = serde_json::json!({
+        "model": "m",
+        "input": [{"type": "additional_tools", "tools": [{"type": "custom", "name": "exec"}]}]
+    });
+    let error = responses_to_openai(&body).unwrap_err();
+    assert!(error.json_pointers.contains(&"/input/0/type".to_string()));
+}
+
+#[test]
+fn responses_to_openai_drops_empty_additional_tools_input_item() {
+    let body = serde_json::json!({
+        "model": "m",
+        "input": [
+            {"type": "additional_tools", "tools": []},
+            {"type": "message", "role": "user", "content": "hello"}
+        ]
+    });
+    let converted = responses_to_openai(&body).unwrap();
+    assert_eq!(converted["messages"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn responses_to_openai_maps_string_input_to_a_user_message() {
+    let body = serde_json::json!({"model": "m", "input": "hello"});
+    let converted = responses_to_openai(&body).unwrap();
+    assert_eq!(converted["messages"][0]["role"], "user");
+    assert_eq!(converted["messages"][0]["content"], "hello");
+}
+
+#[test]
+fn responses_to_openai_rejects_string_items_inside_input_array() {
+    let body = serde_json::json!({"model": "m", "input": ["hello"]});
+    let error = responses_to_openai(&body).unwrap_err();
+    assert!(error.json_pointers.contains(&"/input/0".to_string()));
+}
+
+#[test]
+fn responses_to_openai_rejects_untyped_text_items_instead_of_dropping_them() {
+    let body = serde_json::json!({"model": "m", "input": [{"text": "hello"}]});
+    let error = responses_to_openai(&body).unwrap_err();
+    assert!(error.json_pointers.contains(&"/input/0/type".to_string()));
 }
 
 #[test]
@@ -248,8 +313,8 @@ fn responses_to_openai_tolerates_codex_controls_and_maps_reasoning_effort() {
     }
     // ...and reasoning.effort is mapped to reasoning_effort.
     assert_eq!(converted["reasoning_effort"], "high");
-    // Legacy max_tokens default is unchanged (4096) on this path.
-    assert_eq!(converted["max_tokens"], 4096);
+    // Omitting max_output_tokens must not synthesize a max_tokens cap.
+    assert!(converted.get("max_tokens").is_none());
 }
 
 #[test]
@@ -467,4 +532,31 @@ fn responses_input_interleaved_call_never_leaves_orphan_assistant() {
         msgs[4],
         serde_json::json!({"role": "tool", "tool_call_id": "call_B", "content": "file contents"})
     );
+}
+
+#[test]
+fn responses_to_openai_accepts_text_control() {
+    // Codex CLI 的部分请求会带 `text`（输出格式与详细度）。Chat 侧只有
+    // `response_format` 能表达 `format`；`verbosity` 没有对应物，必须丢弃
+    // 而不是让整个请求 400。
+    let with_schema = serde_json::json!({
+        "model": "gpt-4",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "text": {
+            "format": {"type": "json_schema", "name": "out", "schema": {"type": "object"}, "strict": true},
+            "verbosity": "medium"
+        }
+    });
+    let converted = responses_to_openai(&with_schema).unwrap();
+    assert_eq!(converted["response_format"]["type"], "json_schema");
+    assert_eq!(converted["response_format"]["json_schema"]["name"], "out");
+    assert_eq!(converted["response_format"]["json_schema"]["strict"], true);
+
+    let verbosity_only = serde_json::json!({
+        "model": "gpt-4",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "text": {"verbosity": "low"}
+    });
+    let converted = responses_to_openai(&verbosity_only).unwrap();
+    assert!(converted.get("response_format").is_none());
 }

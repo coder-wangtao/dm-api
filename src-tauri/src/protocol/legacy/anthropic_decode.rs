@@ -4,7 +4,6 @@ use serde_json::Value;
 ///
 /// This converter intentionally accepts only the intersection which can be
 /// represented by Chat Completions. Native Anthropic channels must bypass it.
-/// Anthropic（Claude）的 Messages API 请求格式，转换成 OpenAI Chat Completions API 能够识别的请求格式。
 pub fn anthropic_to_openai(body: &Value) -> Result<Value, String> {
     // Fail-open (CLIProxyAPI semantics): thinking/output_config are mapped to
     // `reasoning_effort` below; container/context_management are dropped.  The

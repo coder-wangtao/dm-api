@@ -8,8 +8,9 @@ pub mod commands;
 pub mod core;
 pub mod db;
 mod endpoint_executor;
-pub mod embedding;
 pub mod health_probe;
+mod otlp_exporter;
+pub mod prompt_templates;
 mod protocol;
 #[cfg(test)]
 mod rollout_integration_tests;
@@ -72,9 +73,10 @@ pub struct AppState {
     pub settings: settings_store::SettingsStore,
     /// 应用数据目录（KB 文件等落盘位置）。
     pub data_dir: std::path::PathBuf,
+    /// 软件对接：桌面 AppHandle（headless 为 None），用于高危操作弹窗确认。
+    pub app_handle: crate::services::software::approval::SharedAppHandle,
 }
 
-//当编译条件 mobile 成立时，给当前函数添加 tauri::mobile_entry_point 属性；否则不添加。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 获取可执行文件所在目录
@@ -109,7 +111,6 @@ pub fn run() {
 
     // 日志级别支持 RUST_LOG 环境变量（缺省 info，与既有行为一致；GAP-04），
     // 生产排障可临时 RUST_LOG=debug 无需重编译。
-    //初始化 tracing 日志过滤器，优先读取环境变量中的日志级别配置；如果读取失败，就默认使用 info 级别。
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     // 统一输出到文件；构建失败时回退到标准输出
@@ -121,177 +122,11 @@ pub fn run() {
     }
 
     tauri::Builder::default()
-    //tauri::Builder::default()
-    //作用：打开外部资源。
-    .plugin(tauri_plugin_opener::init())
-    //作用：与系统 Shell 或外部进程交互。
-    .plugin(tauri_plugin_shell::init())
-    //作用：提供系统原生对话框。
-    .plugin(tauri_plugin_dialog::init())
-    .plugin(
-        //注册 SQLite 数据库插件，并为数据库配置初始化迁移脚本。
-        tauri_plugin_sql::Builder::default()
-            .add_migrations(
-                "sqlite:damaoapi.db",
-                vec![tauri_plugin_sql::Migration {
-                    version: 1,
-                    description: "init database",
-                    sql: include_str!("../migrations/001_init.sql"),
-                    kind: tauri_plugin_sql::MigrationKind::Up,
-                }],
-            )
-            .build(),
-    )
-    //本地键值存储
-    .plugin(tauri_plugin_store::Builder::default().build())
-    //系统剪贴板读写
-    .plugin(tauri_plugin_clipboard_manager::init())
-    //桌面系统通知
-    .plugin(tauri_plugin_notification::init())
-    //自动启动插件:应用程序的开机自动启动。
-    .plugin(tauri_plugin_autostart::init(
-        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-        None::<Vec<&str>>,
-    ))
-    .setup(|app| {
-        #[cfg(feature = "desktop-ui")]
-        {
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
-                .menu(&menu)
-                .tooltip("DaMaoAPI - Local LLM API Gateway")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let _ = restore_main_window(tray.app_handle());
-                    }
-                })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "quit" => app.exit(0),
-                    "show" => {
-                        let _ = restore_main_window(app);
-                    }
-                    _ => {}
-                })
-                .build(app)?;
-        }
-
-        if let Some(window) = app.get_webview_window("main") {
-            let app_handle = app.handle().clone();
-            window.on_window_event(move |event| match event {
-                tauri::WindowEvent::CloseRequested { api, .. } => {
-                    if should_close_to_tray(&app_handle) {
-                        api.prevent_close();
-                        if let Some(main_window) = app_handle.get_webview_window("main") {
-                            let _ = main_window.hide();
-                        }
-                    }
-                }
-                _ => {}
-            });
-
-            if env_flag("DAMAOAPI_HIDE_WINDOW") {
-                let _ = window.hide();
-            }
-        }
-
-        let app_handle = app.handle().clone();
-        tauri::async_runtime::block_on(async move {
-            let data_dir = app_handle
-                .path()
-                .app_data_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-            let db = db::Database::new(&app_handle).await;
-            let db = Arc::new(db);
-            if let Err(e) = server::admin_auth::ensure_initial_admin(&db.pool, &data_dir).await
-            {
-                log::error!("初始化 Web 管理员账号失败: {e}");
-            }
-            let auth_service = Arc::new(auth_provider::service::AuthService::new(
-                Arc::new(db::repository::Repository::new(db.pool.clone())),
-                auth_provider::ProviderRegistry::new(),
-            ));
-            let (event_tx, _) =
-                tokio::sync::broadcast::channel(server::event_bridge::EVENT_CHANNEL_CAPACITY);
-            let emit_handle = app_handle.clone();
-            let state = Arc::new(AppState {
-                db,
-                auth_service: auth_service.clone(),
-                login_sessions: Arc::new(commands::auth::LoginSessions::new()),
-                server_port: Arc::new(RwLock::new(0)),
-                server_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                server_handle: Arc::new(RwLock::new(None)),
-                test_receipts: Arc::new(crate::services::channel_test::TestReceiptStore::new(
-                    std::time::Duration::from_secs(30 * 60),
-                )),
-                admin_sessions: server::admin_auth::SessionStore::new(),
-                login_throttle: server::admin_auth::LoginThrottle::new(),
-                events: server::event_bridge::EventSink::desktop(
-                    move |event, payload| {
-                        let _ = emit_handle.emit(event, payload);
-                    },
-                    event_tx,
-                ),
-                settings: settings_store::SettingsStore::new(Arc::new(TauriSettingsBackend(
-                    app_handle.clone(),
-                ))),
-                data_dir,
-            });
-            app_handle.manage(state.clone());
-
-            crate::audit_log::apply_settings(&state.settings);
-            // 全局出站代理（VPN 固定端口）：启动时从设置加载。
-            {
-                let enabled = state.settings.get_bool("network.proxy.enabled", false);
-                let url = state.settings.get_str("network.proxy.url", "");
-                crate::adaptor::set_global_proxy(enabled.then_some(url));
-            }
-            tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
-                state.db.pool.clone(),
-                state.settings.clone(),
-            ));
-
-            // 渠道主动健康探测（默认开启 300s 一轮，可整体关闭）
-            tauri::async_runtime::spawn(crate::health_probe::run_probe_loop(
-                state.db.pool.clone(),
-                state.settings.clone(),
-            ));
-
-            // 语义缓存过期清理（C-02；缓存未启用时清理为空操作）
-            tauri::async_runtime::spawn(crate::semantic_cache::run_maintenance_loop(
-                state.db.pool.clone(),
-            ));
-
-            tauri::async_runtime::spawn(async move {
-                auth_provider::maintenance::run_maintenance_loop(auth_service).await;
-            });
-
-            // 桌面版启动即自动拉起内嵌服务（LLM 网关 + /admin/api）；
-            // Web 管理面板 SPA 仅在 embed-web 构建（damaoapi-web / Docker）中提供。
-            let state_clone = state.clone();
-            let app_clone = app_handle.clone();
-            let handle = tauri::async_runtime::spawn(async move {
-                if let Err(e) = server::start_server(state_clone, Some(app_clone)).await {
-                    log::error!("内嵌服务启动失败: {e}");
-                }
-            });
-            *state.server_handle.write().await = Some(handle);
-        });
-
-        Ok(())
-    })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(
@@ -324,7 +159,6 @@ pub fn run() {
                     .menu(&menu)
                     .tooltip("DaMaoAPI - Local LLM API Gateway")
                     .show_menu_on_left_click(false)
-                    //监听系统托盘图标的鼠标事件，当用户用鼠标左键点击托盘图标并松开时，恢复应用主窗口。
                     .on_tray_icon_event(|tray, event| {
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
@@ -348,7 +182,6 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let app_handle = app.handle().clone();
                 window.on_window_event(move |event| match event {
-                    //move 会将闭包中使用的变量移动进闭包，避免生命周期问题。
                     tauri::WindowEvent::CloseRequested { api, .. } => {
                         if should_close_to_tray(&app_handle) {
                             api.prevent_close();
@@ -367,13 +200,11 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
-                //block_on 阻塞当前执行流程，直到内部的异步任务执行完成。
                 let data_dir = app_handle
                     .path()
                     .app_data_dir()
                     .unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let db = db::Database::new(&app_handle).await;
-                //Arc 是线程安全的引用计数智能指针。允许多个线程或异步任务共享同一个对象，而不需要复制数据库连接池。
                 let db = Arc::new(db);
                 if let Err(e) = server::admin_auth::ensure_initial_admin(&db.pool, &data_dir).await
                 {
@@ -408,9 +239,17 @@ pub fn run() {
                         app_handle.clone(),
                     ))),
                     data_dir,
+                    app_handle: Arc::new(RwLock::new(Some(app_handle.clone()))),
                 });
                 app_handle.manage(state.clone());
 
+                // 注册全局网关事件出口（路由总览页的粒子动画数据源）。
+                server::event_bridge::register_gateway_sink(state.events.clone());
+
+                // Prompt 模板种子（C-07）：空表时写入源码字面量 v1——升级后行为逐字节不变
+                if let Err(error) = crate::prompt_templates::seed_if_empty(&state.db.pool).await {
+                    tracing::warn!("[模板] 种子写入失败（运行时回退编译期默认）: {error}");
+                }
                 crate::audit_log::apply_settings(&state.settings);
                 // 全局出站代理（VPN 固定端口）：启动时从设置加载。
                 {
@@ -419,6 +258,12 @@ pub fn run() {
                     crate::adaptor::set_global_proxy(enabled.then_some(url));
                 }
                 tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
+                    state.db.pool.clone(),
+                    state.settings.clone(),
+                ));
+
+                // OTLP 导出（默认关闭，开启后按 seq 游标增量导出 request_log）
+                tauri::async_runtime::spawn(crate::otlp_exporter::run_export_loop(
                     state.db.pool.clone(),
                     state.settings.clone(),
                 ));
@@ -469,9 +314,17 @@ pub fn run() {
             commands::channel::get_channel_extra_keys,
             commands::channel::get_channel_extra_key_value,
             commands::channel::toggle_channel_extra_key,
+            commands::channel::toggle_channel_primary_key,
             commands::channel::delete_channel_extra_key,
             commands::api_key::get_api_keys,
+            commands::api_key::get_api_key_knowledge_access,
+            commands::api_key::set_api_key_knowledge_access,
+            commands::api_key::test_api_key_knowledge_access,
+            commands::api_key::get_api_key_wiki_access,
+            commands::api_key::set_api_key_wiki_access,
+            commands::api_key::test_api_key_knowledge_health,
             commands::api_key::get_api_key_full,
+            commands::api_key::get_api_key_answer_models,
             commands::api_key::create_api_key,
             commands::api_key::update_api_key,
             commands::api_key::delete_api_key,
@@ -486,8 +339,12 @@ pub fn run() {
             commands::auth::auth_login_import_content,
             commands::auth::auth_default_import_path,
             commands::auth::auth_logout,
+            commands::auth::auth_update_mapping_disabled,
             commands::auth::auth_refresh_token,
             commands::auth::auth_refresh_quota,
+            commands::auth::auth_list_reset_credits,
+            commands::auth::auth_consume_reset_credit,
+            commands::auth::auth_resume_reset_operation,
             commands::auth::auth_sync_models,
             commands::auth::auth_export_json,
             commands::auth::auth_export_json_content,
@@ -497,17 +354,29 @@ pub fn run() {
             commands::auth::auth_reorder_accounts,
             commands::log::get_logs,
             commands::log::count_logs,
+            commands::log::get_log_filter_options,
             commands::log::get_log,
             commands::log::get_log_security_findings,
             commands::log::get_log_stream_segments,
             commands::log::delete_log,
             commands::log::delete_logs_before,
             commands::log::delete_all_logs,
+            commands::log::delete_logs,
+            commands::log::clear_usage_stats,
+            commands::log::cleanup_channel,
             commands::log::get_log_stats,
+            commands::log::get_log_prompt_parts,
+            commands::log::get_log_attempts,
+            commands::prompt_template::list_prompt_templates,
+            commands::prompt_template::create_prompt_template,
+            commands::prompt_template::activate_prompt_template,
             commands::log_repair::repair_stream_cancel_logs,
             commands::stats::get_dashboard_stats,
             commands::stats::get_model_stats,
             commands::stats::get_token_trend,
+            commands::stats::get_prompt_part_stats,
+            commands::stats::get_route_flow,
+            commands::stats::get_daily_token_stats,
             commands::settings::get_settings,
             commands::network::detect_local_proxies,
             commands::settings::get_feature_flags,
@@ -516,6 +385,7 @@ pub fn run() {
             commands::settings::apply_theme,
             commands::settings::set_auto_start,
             commands::server::get_server_status,
+            commands::server::mcp_online_call,
             commands::server::restart_server,
             commands::security::get_builtin_security_rules,
             commands::security::update_builtin_security_rule,
@@ -532,6 +402,58 @@ pub fn run() {
             commands::import_export::import_scanned_sources,
             commands::import_export::pick_import_file,
             commands::import_export::save_export_file,
+            // Knowledge Base
+            commands::knowledge_base::get_knowledge_bases,
+            commands::knowledge_base::get_knowledge_embedding_capability,
+            commands::knowledge_base::create_knowledge_base,
+            commands::knowledge_base::update_knowledge_base,
+            commands::knowledge_base::delete_knowledge_base,
+            commands::knowledge_base::get_kb_documents,
+            commands::knowledge_base::delete_kb_document,
+            commands::knowledge_base::reindex_kb_document,
+            commands::knowledge_base::search_knowledge_base,
+            commands::knowledge_base::ask_knowledge_base,
+            commands::knowledge_base::get_kb_stats,
+            commands::knowledge_base::upload_kb_document,
+            commands::knowledge_base::upload_kb_document_from_path,
+            commands::knowledge_base::get_kb_conversations,
+            commands::knowledge_base::clear_kb_conversations,
+            commands::knowledge_base::get_kb_sources,
+            commands::knowledge_base::delete_kb_source,
+            commands::knowledge_base::import_kb_source,
+            commands::knowledge_base::get_kb_index_status,
+            commands::knowledge_base::build_kb_index,
+            commands::knowledge_base::drop_kb_index,
+            commands::knowledge_base::get_kb_tags,
+            commands::knowledge_base::get_ocr_cache_info,
+            commands::knowledge_base::clear_ocr_cache,
+            commands::services::get_service_statuses,
+            // Wiki
+            commands::wiki::get_wiki_projects,
+            commands::wiki::create_wiki_project,
+            commands::wiki::get_wiki_project,
+            commands::wiki::update_wiki_project,
+            commands::wiki::delete_wiki_project,
+            commands::wiki::get_wiki_pages,
+            commands::wiki::get_wiki_page,
+            commands::wiki::save_wiki_page,
+            commands::wiki::delete_wiki_page,
+            commands::wiki::get_wiki_sources,
+            commands::wiki::add_wiki_source,
+            commands::wiki::add_wiki_source_from_path,
+            commands::wiki::delete_wiki_source,
+            commands::wiki::search_wiki,
+            commands::wiki::get_wiki_graph,
+            commands::wiki::get_wiki_stats,
+            commands::wiki::ingest_wiki_source,
+            commands::wiki::cancel_wiki_ingest,
+            commands::wiki::rescan_wiki_sources,
+            commands::wiki::get_wiki_tags,
+            commands::wiki::export_wiki_project,
+            commands::wiki::import_wiki_backup,
+            commands::wiki::import_wiki_backup_bytes,
+            commands::wiki::pick_wiki_export_dir,
+            commands::wiki::pick_wiki_import_file,
             // App Config (应用配置)
             commands::app_config::get_app_configs,
             commands::app_config::apply_app_config,
@@ -539,8 +461,20 @@ pub fn run() {
             commands::app_config::reset_codex_auth,
             commands::app_config::get_app_config_content,
             commands::app_config::open_config_folder,
-            commands::services::get_service_statuses,
-
+            // Software（软件对接）
+            commands::software::get_software_instances,
+            commands::software::get_software_connector_catalog,
+            commands::software::create_software_instance,
+            commands::software::update_software_instance,
+            commands::software::toggle_software_instance,
+            commands::software::delete_software_instance,
+            commands::software::get_software_instance_tools,
+            commands::software::get_software_tool_logs,
+            commands::software::scan_installed_software,
+            commands::software::import_openapi,
+            commands::software::get_clihub_catalog,
+            commands::software::install_clihub_cli,
+            commands::software::create_clihub_instance,
         ])
         .build(tauri::generate_context!())
         .expect("error while building DaMaoAPI")

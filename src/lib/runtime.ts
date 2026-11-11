@@ -1,15 +1,15 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
-export const WEB_UNAUTHORIZED_EVENT = "damao:web-unauthorized";
+export const WEB_UNAUTHORIZED_EVENT = "damaoapi:web-unauthorized";
 
 /**
  * Web 管理面板的 Bearer token 读取（FIX-14 token 源收敛）：
- * 主源是登录页写入的 localStorage `damao_admin_token`（web/src/lib/auth.ts），
+ * 主源是登录页写入的 localStorage `damaoapi_admin_token`（web/src/lib/auth.ts），
  * 兼容读旧的 sessionStorage 键（WebAdminGate 直连模式写入）。
  * 此前 invoke/listen 只读 sessionStorage——登录页从不写那个键，
  * Web 面板的命令调用实际全靠会话 Cookie 兜底，Bearer 形同虚设。
  */
-const WEB_ADMIN_TOKEN_STORAGE_KEY = "damao_admin_token";
+const WEB_ADMIN_TOKEN_STORAGE_KEY = "damaoapi_admin_token";
 const WEB_ADMIN_TOKEN_LEGACY_SESSION_KEY = "damaoapi.web.admin-token";
 
 export interface RuntimeEvent<T> {
@@ -173,6 +173,27 @@ export async function listen<T>(
     }
   })();
   return () => controller.abort();
+}
+
+/**
+ * 监听文件拖放 —— 桌面端必须走这里（tauri OS 级拖放事件）。
+ * dragDropEnabled:true 时 tauri 接管拖放并 emit 事件，WebView 的 HTML5 drop **不会触发**，
+ * 因此桌面端只能通过本函数拿文件路径；浏览器部署返回 no-op（由组件上的 HTML5 onDrop 处理）。
+ */
+export async function onFileDrop(
+  cb: (paths: string[]) => void,
+): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { getCurrentWebviewWindow } =
+    await import("@tauri-apps/api/webviewWindow");
+  const unlisten = await getCurrentWebviewWindow().onDragDropEvent((event) => {
+    const payload = event.payload as { type: string; paths?: string[] };
+    if (payload.type === "drop") {
+      const paths = payload.paths ?? [];
+      if (paths.length > 0) cb(paths);
+    }
+  });
+  return unlisten;
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

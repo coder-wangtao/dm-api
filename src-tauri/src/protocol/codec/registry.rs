@@ -9,7 +9,7 @@ use super::ports::{
 };
 use super::report::{ConversionContext, ConversionReport};
 use super::types::{CodecId, PreparedCodec, PreparedConversion, Protocol};
-use super::{chat, directions, gemini, messages, responses_codec};
+use super::{chat, directions, gemini, messages, qoder, responses_codec};
 use serde_json::Value;
 
 type EncodeFn = fn(&Value, &str) -> Result<(Value, ConversionContext), PrepareError>;
@@ -190,9 +190,17 @@ impl CodecRegistry {
             (Protocol::Chat, Protocol::Gemini) => &gemini::CHAT_TO_GEMINI,
             (Protocol::Messages, Protocol::Gemini) => &gemini::MESSAGES_TO_GEMINI,
             (Protocol::Responses, Protocol::Gemini) => &gemini::RESPONSES_TO_GEMINI,
+            (Protocol::Chat, Protocol::Qoder) => &qoder::CHAT_TO_QODER,
+            (Protocol::Messages, Protocol::Qoder) => &qoder::MESSAGES_TO_QODER,
+            (Protocol::Responses, Protocol::Qoder) => &qoder::RESPONSES_TO_QODER,
             (Protocol::Gemini, _) => {
                 return Err(CodecError::new(
                     "Gemini is an upstream-only protocol and cannot be used downstream",
+                ))
+            }
+            (Protocol::Qoder, _) => {
+                return Err(CodecError::new(
+                    "Qoder is an upstream-only protocol and cannot be used downstream",
                 ))
             }
         };
@@ -224,7 +232,6 @@ impl CodecRegistry {
         })
     }
 
-    #[allow(dead_code)] // 单测入口；正式路由走 prepare_pair
     pub fn chat_to_messages(
         model: &str,
         request: &Value,
@@ -232,7 +239,6 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Chat, Protocol::Messages, model, request)
     }
 
-    #[allow(dead_code)]
     pub fn messages_to_chat(
         model: &str,
         request: &Value,
@@ -240,7 +246,6 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Messages, Protocol::Chat, model, request)
     }
 
-    #[allow(dead_code)]
     pub fn chat_to_responses(
         model: &str,
         request: &Value,
@@ -248,7 +253,6 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Chat, Protocol::Responses, model, request)
     }
 
-    #[allow(dead_code)]
     pub fn messages_to_responses(
         model: &str,
         request: &Value,
@@ -256,7 +260,6 @@ impl CodecRegistry {
         Self::prepare_pair(Protocol::Messages, Protocol::Responses, model, request)
     }
 
-    #[allow(dead_code)]
     pub fn responses_to_messages(
         model: &str,
         request: &Value,

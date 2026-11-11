@@ -4,9 +4,10 @@
 //! - `/invoke`：与 Tauri invoke 语义 1:1 对应的单一入口，按 cmd 名分发到 commands 函数
 //! - `/events`：SSE 事件桥，事件名与桌面端 `app.emit` 一致
 //!
-//! 除 `/auth/login` 外全部要求管理员会话（Bearer token 或 `damao_admin_token` Cookie）。
+//! 除 `/auth/login` 外全部要求管理员会话（Bearer token 或 `damaoapi_admin_token` Cookie）。
 
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
@@ -29,8 +30,9 @@ use tokio::sync::broadcast;
 use super::admin_auth::{self, AdminSession};
 use super::router::SharedState;
 use crate::commands;
+use crate::AppState;
 
-const SESSION_COOKIE: &str = "damao_admin_token";
+const SESSION_COOKIE: &str = "damaoapi_admin_token";
 const SESSION_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 
 /// 认证通过后注入 request extensions 的身份信息。
@@ -265,7 +267,7 @@ async fn logout(
     let mut response = Json(json!({ "ok": true })).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
-        HeaderValue::from_static("damao_admin_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly"),
+        HeaderValue::from_static("damaoapi_admin_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly"),
     );
     response
 }
@@ -476,14 +478,66 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
             )
             .await,
         ),
+        "toggle_channel_primary_key" => to_json(
+            commands::channel::toggle_channel_primary_key(
+                arg(&args, "id")?,
+                arg(&args, "enabled")?,
+                state,
+            )
+            .await,
+        ),
         "delete_channel_extra_key" => {
             to_json(commands::channel::delete_channel_extra_key(arg(&args, "keyId")?, state).await)
         }
 
         // ── API 密钥 ──
+        "get_api_key_knowledge_access" => {
+            to_json(commands::api_key::get_api_key_knowledge_access(state, arg(&args, "id")?).await)
+        }
+        "set_api_key_knowledge_access" => to_json(
+            commands::api_key::set_api_key_knowledge_access(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "kbIds")?,
+            )
+            .await,
+        ),
+        "test_api_key_knowledge_access" => to_json(
+            commands::api_key::test_api_key_knowledge_access(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "kbId")?,
+            )
+            .await,
+        ),
+        "get_api_key_wiki_access" => {
+            to_json(commands::api_key::get_api_key_wiki_access(state, arg(&args, "id")?).await)
+        }
+        "set_api_key_wiki_access" => to_json(
+            commands::api_key::set_api_key_wiki_access(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "projectIds")?,
+            )
+            .await,
+        ),
+        "test_api_key_knowledge_health" => to_json(
+            commands::api_key::test_api_key_knowledge_health(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "kbId")?,
+                arg(&args, "model")?,
+                arg(&args, "question")?,
+                arg(&args, "searchMode")?,
+            )
+            .await,
+        ),
         "get_api_keys" => to_json(commands::api_key::get_api_keys(state).await),
         "get_api_key_full" => {
             to_json(commands::api_key::get_api_key_full(state, arg(&args, "id")?).await)
+        }
+        "get_api_key_answer_models" => {
+            to_json(commands::api_key::get_api_key_answer_models(state, arg(&args, "id")?).await)
         }
         "create_api_key" => {
             to_json(commands::api_key::create_api_key(arg(&args, "input")?, state).await)
@@ -499,6 +553,7 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         // ── 日志 ──
         "get_logs" => to_json(commands::log::get_logs(arg(&args, "input")?, state).await),
         "count_logs" => to_json(commands::log::count_logs(arg(&args, "input")?, state).await),
+        "get_log_filter_options" => to_json(commands::log::get_log_filter_options(state).await),
         "get_log" => to_json(commands::log::get_log(arg(&args, "id")?, state).await),
         "get_log_security_findings" => {
             to_json(commands::log::get_log_security_findings(arg(&args, "logId")?, state).await)
@@ -507,11 +562,58 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
             to_json(commands::log::get_log_stream_segments(arg(&args, "logId")?, state).await)
         }
         "get_log_stats" => to_json(commands::log::get_log_stats(arg(&args, "days")?, state).await),
+        "get_log_prompt_parts" => {
+            to_json(commands::log::get_log_prompt_parts(arg(&args, "logId")?, state).await)
+        }
+        "get_log_attempts" => {
+            to_json(commands::log::get_log_attempts(arg(&args, "logId")?, state).await)
+        }
+        "list_prompt_templates" => {
+            to_json(commands::prompt_template::list_prompt_templates(state).await)
+        }
+        "create_prompt_template" => to_json(
+            commands::prompt_template::create_prompt_template(
+                arg(&args, "templateKey")?,
+                arg(&args, "content")?,
+                state,
+            )
+            .await,
+        ),
+        "activate_prompt_template" => to_json(
+            commands::prompt_template::activate_prompt_template(
+                arg(&args, "templateKey")?,
+                arg(&args, "version")?,
+                state,
+            )
+            .await,
+        ),
         "delete_log" => to_json(commands::log::delete_log(arg(&args, "id")?, state).await),
         "delete_logs_before" => {
             to_json(commands::log::delete_logs_before(arg(&args, "beforeDate")?, state).await)
         }
         "delete_all_logs" => to_json(commands::log::delete_all_logs(state).await),
+        // 多条件组合清理(Task 4):时间 + 状态/成功与否 + 渠道/Key/模型,AND 组合;
+        // clear_stats=false 默认只删日志不动统计;dry_run=true 只返回匹配数。
+        "delete_logs" => {
+            let input: commands::log::DeleteLogsInput =
+                serde_json::from_value(arg(&args, "input")?)
+                    .map_err(|e| format!("参数 input 无效: {e}"))?;
+            to_json(commands::log::delete_logs(input, state).await)
+        }
+        // 独立清除历史统计数据(不删日志)。
+        "clear_usage_stats" => {
+            let input: commands::log::DeleteLogsInput =
+                serde_json::from_value(arg(&args, "input")?)
+                    .map_err(|e| format!("参数 input 无效: {e}"))?;
+            to_json(commands::log::clear_usage_stats(input, state).await)
+        }
+        // 渠道清理(按渠道维度:清日志/清统计/重置失败计数,dry_run 可预览)。
+        "cleanup_channel" => {
+            let input: commands::log::CleanupChannelInput =
+                serde_json::from_value(arg(&args, "input")?)
+                    .map_err(|e| format!("参数 input 无效: {e}"))?;
+            to_json(commands::log::cleanup_channel(input, state).await)
+        }
         // 历史 499 日志一次性修复：默认 dry-run，input.apply=true 才写库。
         // input 缺省为 {}，让不带参数直接调用也能拿到报告。
         "repair_stream_cancel_logs" => {
@@ -583,6 +685,26 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         "auth_refresh_quota" => {
             to_json(commands::auth::auth_refresh_quota(arg(&args, "id")?, state).await)
         }
+        "auth_list_reset_credits" => {
+            to_json(commands::auth::auth_list_reset_credits(arg(&args, "id")?, state).await)
+        }
+        "auth_consume_reset_credit" => to_json(
+            commands::auth::auth_consume_reset_credit(
+                arg(&args, "id")?,
+                arg(&args, "creditId")?,
+                arg(&args, "operationId")?,
+                state,
+            )
+            .await,
+        ),
+        "auth_resume_reset_operation" => to_json(
+            commands::auth::auth_resume_reset_operation(
+                arg(&args, "id")?,
+                arg(&args, "operationId")?,
+                state,
+            )
+            .await,
+        ),
         "auth_sync_models" => {
             to_json(commands::auth::auth_sync_models(arg(&args, "id")?, state).await)
         }
@@ -594,6 +716,14 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         }
         "auth_toggle" => to_json(
             commands::auth::auth_toggle(arg(&args, "id")?, arg(&args, "disabled")?, state).await,
+        ),
+        "auth_update_mapping_disabled" => to_json(
+            commands::auth::auth_update_mapping_disabled(
+                arg(&args, "id")?,
+                arg(&args, "disabled")?,
+                state,
+            )
+            .await,
         ),
         "auth_quota_status" => {
             to_json(commands::auth::auth_quota_status(arg(&args, "id")?, state).await)
@@ -608,6 +738,15 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         "get_model_stats" => to_json(commands::stats::get_model_stats(state).await),
         "get_token_trend" => {
             to_json(commands::stats::get_token_trend(arg(&args, "hours")?, state).await)
+        }
+        "get_prompt_part_stats" => {
+            to_json(commands::stats::get_prompt_part_stats(arg(&args, "hours")?, state).await)
+        }
+        "get_route_flow" => {
+            to_json(commands::stats::get_route_flow(arg(&args, "hours")?, state).await)
+        }
+        "get_daily_token_stats" => {
+            to_json(commands::stats::get_daily_token_stats(arg(&args, "days")?, state).await)
         }
         "get_settings" => to_json(commands::settings::get_settings(state).await),
         "clear_semantic_cache" => {
@@ -629,6 +768,14 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         "get_feature_flags" => to_json(commands::settings::get_feature_flags(state)),
         "detect_local_proxies" => to_json(commands::network::detect_local_proxies().await),
         "get_server_status" => to_json(commands::server::get_server_status(state).await),
+        "mcp_online_call" => to_json(
+            commands::server::mcp_online_call_impl(
+                state.inner(),
+                arg(&args, "auth")?,
+                arg(&args, "body")?,
+            )
+            .await,
+        ),
         #[cfg(feature = "desktop-ui")]
         "restart_server" => match shared.desktop_app {
             Some(app) => to_json(commands::server::restart_server(app.clone(), state).await),
@@ -636,6 +783,7 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         },
         #[cfg(not(feature = "desktop-ui"))]
         "restart_server" => to_json(restart_server_headless(shared).await),
+        "get_service_statuses" => to_json(commands::services::get_service_statuses(state).await),
 
         // ── 安全规则 ──
         "get_builtin_security_rules" => {
@@ -707,6 +855,227 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         #[cfg(not(feature = "desktop-ui"))]
         "save_export_file" => Err("文件保存对话框仅桌面版可用".to_string()),
 
+        // ── 知识库 ──
+        "get_knowledge_bases" => {
+            to_json(commands::knowledge_base::get_knowledge_bases(state).await)
+        }
+        "get_knowledge_embedding_capability" => to_json(
+            commands::knowledge_base::get_knowledge_embedding_capability(
+                state,
+                arg(&args, "model")?,
+            )
+            .await,
+        ),
+        "create_knowledge_base" => to_json(
+            commands::knowledge_base::create_knowledge_base(state, arg(&args, "input")?).await,
+        ),
+        "update_knowledge_base" => to_json(
+            commands::knowledge_base::update_knowledge_base(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "input")?,
+            )
+            .await,
+        ),
+        "delete_knowledge_base" => {
+            to_json(commands::knowledge_base::delete_knowledge_base(state, arg(&args, "id")?).await)
+        }
+        "get_kb_documents" => {
+            to_json(commands::knowledge_base::get_kb_documents(state, arg(&args, "kbId")?).await)
+        }
+        "delete_kb_document" => to_json(
+            commands::knowledge_base::delete_kb_document(
+                state,
+                arg(&args, "docId")?,
+                arg(&args, "kbId")?,
+            )
+            .await,
+        ),
+        "reindex_kb_document" => to_json(
+            commands::knowledge_base::reindex_kb_document(state, arg(&args, "docId")?).await,
+        ),
+        "get_kb_tags" => to_json(
+            commands::knowledge_base::get_kb_tags(state, arg(&args, "kbId")?, arg(&args, "limit")?)
+                .await,
+        ),
+        "search_knowledge_base" => to_json(
+            commands::knowledge_base::search_knowledge_base(state, arg(&args, "input")?).await,
+        ),
+        "ask_knowledge_base" => {
+            to_json(commands::knowledge_base::ask_knowledge_base(state, arg(&args, "input")?).await)
+        }
+        "get_kb_stats" => {
+            to_json(commands::knowledge_base::get_kb_stats(state, arg(&args, "kbId")?).await)
+        }
+        "upload_kb_document" => {
+            to_json(commands::knowledge_base::upload_kb_document(state, arg(&args, "input")?).await)
+        }
+        "upload_kb_document_from_path" => to_json(
+            commands::knowledge_base::upload_kb_document_from_path(
+                state,
+                arg(&args, "kbId")?,
+                arg(&args, "path")?,
+            )
+            .await,
+        ),
+        "get_kb_conversations" => to_json(
+            commands::knowledge_base::get_kb_conversations(state, arg(&args, "kbId")?).await,
+        ),
+        "clear_kb_conversations" => to_json(
+            commands::knowledge_base::clear_kb_conversations(state, arg(&args, "kbId")?).await,
+        ),
+        "get_kb_sources" => {
+            to_json(commands::knowledge_base::get_kb_sources(state, arg(&args, "kbId")?).await)
+        }
+        "delete_kb_source" => to_json(
+            commands::knowledge_base::delete_kb_source(
+                state,
+                arg(&args, "sourceId")?,
+                arg(&args, "kbId")?,
+            )
+            .await,
+        ),
+        "import_kb_source" => to_json(
+            commands::knowledge_base::import_kb_source(
+                state,
+                arg(&args, "kbId")?,
+                arg(&args, "input")?,
+            )
+            .await,
+        ),
+        "get_kb_index_status" => {
+            to_json(commands::knowledge_base::get_kb_index_status(state, arg(&args, "kbId")?).await)
+        }
+        "build_kb_index" => {
+            to_json(commands::knowledge_base::build_kb_index(state, arg(&args, "kbId")?).await)
+        }
+        "drop_kb_index" => {
+            to_json(commands::knowledge_base::drop_kb_index(state, arg(&args, "kbId")?).await)
+        }
+        "get_ocr_cache_info" => to_json(commands::knowledge_base::get_ocr_cache_info(state).await),
+        "clear_ocr_cache" => to_json(commands::knowledge_base::clear_ocr_cache(state).await),
+
+        // ── Wiki ──
+        "get_wiki_projects" => to_json(commands::wiki::get_wiki_projects(state).await),
+        "create_wiki_project" => {
+            to_json(commands::wiki::create_wiki_project(state, arg(&args, "input")?).await)
+        }
+        "get_wiki_project" => {
+            to_json(commands::wiki::get_wiki_project(state, arg(&args, "id")?).await)
+        }
+        "update_wiki_project" => to_json(
+            commands::wiki::update_wiki_project(state, arg(&args, "id")?, arg(&args, "input")?)
+                .await,
+        ),
+        "delete_wiki_project" => {
+            to_json(commands::wiki::delete_wiki_project(state, arg(&args, "id")?).await)
+        }
+        "get_wiki_pages" => {
+            to_json(commands::wiki::get_wiki_pages(state, arg(&args, "projectId")?).await)
+        }
+        "get_wiki_page" => to_json(
+            commands::wiki::get_wiki_page(state, arg(&args, "projectId")?, arg(&args, "path")?)
+                .await,
+        ),
+        "save_wiki_page" => to_json(
+            commands::wiki::save_wiki_page(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "path")?,
+                arg(&args, "content")?,
+            )
+            .await,
+        ),
+        "delete_wiki_page" => to_json(
+            commands::wiki::delete_wiki_page(state, arg(&args, "projectId")?, arg(&args, "path")?)
+                .await,
+        ),
+        "get_wiki_sources" => {
+            to_json(commands::wiki::get_wiki_sources(state, arg(&args, "projectId")?).await)
+        }
+        "add_wiki_source" => to_json(
+            commands::wiki::add_wiki_source(state, arg(&args, "projectId")?, arg(&args, "input")?)
+                .await,
+        ),
+        "add_wiki_source_from_path" => to_json(
+            commands::wiki::add_wiki_source_from_path(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "path")?,
+            )
+            .await,
+        ),
+        "delete_wiki_source" => {
+            to_json(commands::wiki::delete_wiki_source(state, arg(&args, "sourceId")?).await)
+        }
+        "search_wiki" => to_json(
+            commands::wiki::search_wiki(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "query")?,
+                arg(&args, "topK")?,
+            )
+            .await,
+        ),
+        "get_wiki_graph" => {
+            to_json(commands::wiki::get_wiki_graph(state, arg(&args, "projectId")?).await)
+        }
+        "get_wiki_tags" => to_json(
+            commands::wiki::get_wiki_tags(state, arg(&args, "projectId")?, arg(&args, "limit")?)
+                .await,
+        ),
+        "get_wiki_stats" => {
+            to_json(commands::wiki::get_wiki_stats(state, arg(&args, "projectId")?).await)
+        }
+        "ingest_wiki_source" => to_json(
+            commands::wiki::ingest_wiki_source(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "sourceId")?,
+            )
+            .await,
+        ),
+        "cancel_wiki_ingest" => to_json(
+            commands::wiki::cancel_wiki_ingest(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "sourceId")?,
+            )
+            .await,
+        ),
+        "rescan_wiki_sources" => {
+            to_json(commands::wiki::rescan_wiki_sources(state, arg(&args, "projectId")?).await)
+        }
+        // ── Wiki 备份：导出 / 导入 ──
+        "export_wiki_project" => to_json(
+            commands::wiki::export_wiki_project(
+                state,
+                arg(&args, "projectId")?,
+                arg(&args, "targetDir")?,
+            )
+            .await,
+        ),
+        "import_wiki_backup" => {
+            to_json(commands::wiki::import_wiki_backup(state, arg(&args, "path")?).await)
+        }
+        "import_wiki_backup_bytes" => {
+            to_json(commands::wiki::import_wiki_backup_bytes(state, arg(&args, "base64")?).await)
+        }
+        #[cfg(feature = "desktop-ui")]
+        "pick_wiki_export_dir" => {
+            let app = desktop_app("导出目录选择")?;
+            to_json(commands::wiki::pick_wiki_export_dir(app.clone()).await)
+        }
+        #[cfg(not(feature = "desktop-ui"))]
+        "pick_wiki_export_dir" => Err("目录选择仅桌面版可用，请填写服务器路径".to_string()),
+        #[cfg(feature = "desktop-ui")]
+        "pick_wiki_import_file" => {
+            let app = desktop_app("备份文件选择")?;
+            to_json(commands::wiki::pick_wiki_import_file(app.clone()).await)
+        }
+        #[cfg(not(feature = "desktop-ui"))]
+        "pick_wiki_import_file" => Err("文件选择仅桌面版可用，请在浏览器中选择备份文件".to_string()),
+
         // ── 应用配置（容器内通常全部不可用，由前端置灰）──
         "get_app_configs" => to_json(commands::app_config::get_app_configs(state).await),
         "apply_app_config" => to_json(
@@ -727,6 +1096,58 @@ async fn dispatch(shared: &SharedState, cmd: &str, args: Value) -> Result<Value,
         "open_config_folder" => {
             to_json(commands::app_config::open_config_folder(arg(&args, "appName")?).await)
         }
+
+        // ── 软件对接（Link）：与桌面 invoke 语义一致，Web 面板/headless 必须可达 ──
+        "get_software_instances" => {
+            to_json(commands::software::get_software_instances(state).await)
+        }
+        "get_software_connector_catalog" => {
+            to_json(commands::software::get_software_connector_catalog().await)
+        }
+        "create_software_instance" => {
+            to_json(commands::software::create_software_instance(state, arg(&args, "input")?).await)
+        }
+        "update_software_instance" => {
+            to_json(commands::software::update_software_instance(state, arg(&args, "input")?).await)
+        }
+        "toggle_software_instance" => to_json(
+            commands::software::toggle_software_instance(
+                state,
+                arg(&args, "id")?,
+                arg(&args, "enabled")?,
+            )
+            .await,
+        ),
+        "delete_software_instance" => {
+            to_json(commands::software::delete_software_instance(state, arg(&args, "id")?).await)
+        }
+        "get_software_instance_tools" => {
+            to_json(commands::software::get_software_instance_tools(state, arg(&args, "id")?).await)
+        }
+        "get_software_tool_logs" => to_json(
+            commands::software::get_software_tool_logs(
+                state,
+                arg(&args, "instanceId")?,
+                arg(&args, "limit")?,
+            )
+            .await,
+        ),
+        "scan_installed_software" => to_json(commands::software::scan_installed_software().await),
+        "import_openapi" => to_json(
+            commands::software::import_openapi(arg(&args, "spec")?, arg(&args, "base_url")?).await,
+        ),
+        "get_clihub_catalog" => to_json(commands::software::get_clihub_catalog().await),
+        "install_clihub_cli" => {
+            to_json(commands::software::install_clihub_cli(arg(&args, "name")?).await)
+        }
+        "create_clihub_instance" => to_json(
+            commands::software::create_clihub_instance(
+                state,
+                arg(&args, "name")?,
+                arg(&args, "mcpEnabled")?,
+            )
+            .await,
+        ),
 
         _ => Err(format!("未知命令: {cmd}")),
     }

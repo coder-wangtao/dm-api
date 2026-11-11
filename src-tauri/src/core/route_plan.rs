@@ -92,6 +92,8 @@ pub enum UpstreamProtocol {
     Responses,
     /// Gemini Code Assist generateContent (auth accounts only).
     Gemini,
+    /// Qoder 私有网关 agent_chat_generation（auth accounts only）。
+    Qoder,
 }
 
 impl UpstreamProtocol {
@@ -102,6 +104,7 @@ impl UpstreamProtocol {
             UpstreamProtocol::Ollama => "ollama",
             UpstreamProtocol::Responses => "responses",
             UpstreamProtocol::Gemini => "gemini",
+            UpstreamProtocol::Qoder => "qoder",
         }
     }
 }
@@ -221,12 +224,12 @@ impl RouteCandidate {
     }
 
     /// Unified accessor: returns the candidate's `model_mapping` as a JSON Value.
-    /// Works for both channels and auth accounts.  Channels exclude disabled
-    /// mapping pairs (migration 041) so closed mappings never resolve upstream.
+    /// Works for both channels and auth accounts.  Both exclude disabled
+    /// mapping pairs (migrations 041/042) so closed mappings never resolve upstream.
     pub fn mapping_json(&self) -> Value {
         match self {
             Self::Channel { channel, .. } => channel.active_model_mapping(),
-            Self::AuthAccount(account) => account.model_mapping().unwrap_or_default(),
+            Self::AuthAccount(account) => account.active_model_mapping(),
         }
     }
 }
@@ -414,14 +417,6 @@ impl HasPriorityWeight for RouteGroupCandidate {
 
 /// Order candidates by priority descending; within a priority tier, sample by
 /// weight WITHOUT replacement (same semantics as the legacy Dispatcher).
-/// 
-/// 
-/// 假设你配置了多个 API 渠道：
-// 渠道	Priority	Weight	作用
-// 官方 API	3	80	主渠道
-// 代理 API	3	20	主渠道备用
-// 备用供应商	2	100	第一故障转移渠道
-// 低成本供应商	1	100	最后备用
 pub fn order_by_priority_weight<T, R>(mut candidates: Vec<T>, rng: &mut R) -> Vec<T>
 where
     T: HasPriorityWeight + Clone,
@@ -430,14 +425,8 @@ where
     if candidates.is_empty() {
         return candidates;
     }
-    // 按优先级从大到小排列
-    // A(priority=3 weight=80)
-    // B(priority=3 weight=20)
-    // C(priority=2 weight=-10 => 0)
-    // D(priority=2)
-    // E(priority=1)
     candidates.sort_by_key(|c| std::cmp::Reverse(c.priority()));
-    let mut ordered = Vec::with_capacity(candidates.len()); //初始化结果数组
+    let mut ordered = Vec::with_capacity(candidates.len());
     let mut start = 0;
     while start < candidates.len() {
         let priority = candidates[start].priority();
@@ -445,17 +434,16 @@ where
         while end < candidates.len() && candidates[end].priority() == priority {
             end += 1;
         }
-        let mut group = candidates[start..end].to_vec(); // 这就是 Priority 为 3 的分组。 [A, B]
+        let mut group = candidates[start..end].to_vec();
         while !group.is_empty() {
-            let total_weight: i64 = group.iter().map(|c| c.weight().max(0)).sum(); //获取每个渠道的权重。
+            let total_weight: i64 = group.iter().map(|c| c.weight().max(0)).sum();
             let index = if total_weight > 0 {
                 let mut point = rng.random_range(0..total_weight);
                 let mut selected = 0;
                 for (idx, c) in group.iter().enumerate() {
-                    // 从权重最大的开始，依次减去权重，直到减到0为止。 权重越大，概率越高
                     point -= c.weight().max(0);
                     if point < 0 {
-                        selected = idx; 
+                        selected = idx;
                         break;
                     }
                 }
@@ -702,16 +690,6 @@ pub fn resolve_route_candidates(
     candidates
 }
 
-/// Check if a model name matches any source key in a mapping JSON.
-/// Used by both `channel_accepts_model` and `auth_account_accepts_model`.
-fn mapping_contains_source(mapping_json: &str, model: &str) -> bool {
-    let mapping: Value = serde_json::from_str(mapping_json).unwrap_or_default();
-    mapping
-        .as_object()
-        .map(|o| o.contains_key(model))
-        .unwrap_or(false)
-}
-
 fn channel_accepts_model(channel: &Channel, model: &str) -> bool {
     let models: Vec<String> = serde_json::from_str(&channel.models).unwrap_or_default();
     if models.is_empty() {
@@ -750,8 +728,12 @@ fn auth_account_accepts_model(account: &AuthAccount, model: &str) -> bool {
     if direct_hit {
         return true;
     }
-    // Mapping source names also count as hits (shared helper).
-    mapping_contains_source(&account.model_mapping_json, model)
+    // Mapping source names also count as hits (disabled pairs excluded, 042).
+    account
+        .active_model_mapping()
+        .as_object()
+        .map(|o| o.contains_key(model))
+        .unwrap_or(false)
 }
 
 /// The repository clears expired quota before returning route accounts.  This
@@ -823,6 +805,26 @@ fn profile_for_model_state(provider: &str, protocol: Option<&str>) -> Option<Aut
             upstream_endpoint: "responses".into(),
             non_stream_framing: AuthNonStreamFraming::ForcedResponsesSse,
         }),
+        ("workbuddy", "openai") => Some(AuthRouteProfile {
+            provider: "workbuddy".into(),
+            native_base_url: "https://copilot.tencent.com".into(),
+            upstream_protocol: UpstreamProtocol::OpenAI,
+            upstream_endpoint: "chat_completions".into(),
+            non_stream_framing: AuthNonStreamFraming::Json,
+        }),
+        ("qoder", protocol) if protocol == "qoder" || protocol.starts_with("qoder:") => {
+            // Qoder 模型快照的 `protocol` 字段同时承载 wire 协议标记与上游
+            // 模型 key（`qoder:<key>`，由 auth_provider/qoder_backend 写入、
+            // 请求构造时反查）。所有 `qoder:*` 形态都走同一条私有 agent_chat
+            // wire profile。
+            Some(AuthRouteProfile {
+                provider: "qoder".into(),
+                native_base_url: "https://api3.qoder.sh".into(),
+                upstream_protocol: UpstreamProtocol::Qoder,
+                upstream_endpoint: "agent_chat".into(),
+                non_stream_framing: AuthNonStreamFraming::Json,
+            })
+        }
         // Unknown provider or unknown non-empty Kimi protocol: fail closed.
         _ => None,
     }
@@ -858,7 +860,8 @@ pub fn resolve_auth_route_profile(
     }
 
     // Alias mapping: every target must resolve to an identical profile.
-    let mapping: Value = serde_json::from_str(&account.model_mapping_json).unwrap_or_default();
+    // Disabled pairs (042) are excluded — a fully-closed alias fails closed.
+    let mapping = account.active_model_mapping();
     let Some(targets) = mapping.get(requested_model) else {
         return None;
     };
@@ -1062,7 +1065,11 @@ fn classify_channel(
             }
         }
         EndpointKind::Embeddings => {
-            if id.protocol == "openai" && has("embeddings") {
+            // 旧 Gemini 执行器固定调用 generateContent，无法发送 /embeddings。
+            if id.protocol == "openai"
+                && has("embeddings")
+                && id.legacy_executor_override.as_deref() != Some("gemini_native")
+            {
                 Some((
                     GroupTier::Native,
                     UpstreamProtocol::OpenAI,
@@ -1112,6 +1119,24 @@ fn classify_auth_account(
     ))
 }
 
+/// Codex Responses Lite may register the current turn's tools through an
+/// `additional_tools` input item. Only the Responses→Gemini codec can preserve
+/// a non-empty registry; Chat/Messages conversion candidates must be filtered.
+/// Codex can send an empty registry (e.g. a turn where the client has not
+/// enabled tools); that carries no tool payload and must not block otherwise
+/// valid conversion routes.
+fn responses_request_uses_additional_tools(body: &Value) -> bool {
+    body.get("input")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("additional_tools"))
+                .filter_map(|item| item.get("tools").and_then(Value::as_array))
+                .any(|tools| !tools.is_empty())
+        })
+}
+
 /// Build the ordered group plan from the surviving model candidates.
 fn build_route_plan<R: Rng + ?Sized>(
     endpoint: EndpointKind,
@@ -1138,6 +1163,17 @@ fn build_route_plan<R: Rng + ?Sized>(
                 if let Some((tier, proto, ep)) =
                     classify_channel(endpoint, &identity, &channel, flags)
                 {
+                    if endpoint == EndpointKind::Responses
+                        && tier == GroupTier::Conversion
+                        && proto != UpstreamProtocol::Gemini
+                        && responses_request_uses_additional_tools(body)
+                    {
+                        config_errors.push(format!(
+                            "channel '{}' ({}): Responses additional_tools requires a native Responses upstream",
+                            channel.name, channel.id
+                        ));
+                        continue;
+                    }
                     routed.push(RouteGroupCandidate {
                         candidate: RouteCandidate::Channel { channel, identity },
                         tier,
@@ -1161,6 +1197,21 @@ fn build_route_plan<R: Rng + ?Sized>(
                     continue;
                 };
                 if let Some((tier, proto, ep)) = classify_auth_account(endpoint, &profile) {
+                    if endpoint == EndpointKind::Responses
+                        && !matches!(
+                            profile.upstream_protocol,
+                            UpstreamProtocol::Responses
+                                | UpstreamProtocol::Gemini
+                                | UpstreamProtocol::Qoder
+                        )
+                        && responses_request_uses_additional_tools(body)
+                    {
+                        config_errors.push(format!(
+                            "auth account '{}' ({}): Responses additional_tools requires a native Responses upstream",
+                            account.label, account.id
+                        ));
+                        continue;
+                    }
                     routed.push(RouteGroupCandidate {
                         candidate: RouteCandidate::AuthAccount(account),
                         tier,
@@ -1261,6 +1312,40 @@ pub fn authorize_and_plan_with_accounts<R: Rng + ?Sized>(
         return Err(PlanError::NoCandidateForModel(model.to_string()));
     }
     build_route_plan(endpoint, model, candidates, flags, body, rng)
+}
+
+/// 知识库内部建库/查询的 Embedding 路由入口，调用身份是受信任的内部服务。
+/// 不伪造 API Key，也不接受外部请求；外部调用仍必须先执行 authorize_and_plan。
+/// 模型匹配、显式端点能力、渠道身份和故障切换预算复用网关同一实现。
+pub(crate) fn plan_internal_embeddings<R: Rng + ?Sized>(
+    model: &str,
+    channels: &[Channel],
+    body: &Value,
+    rng: &mut R,
+) -> Result<RoutePlan, PlanError> {
+    if channels.is_empty() {
+        return Err(PlanError::NoChannels);
+    }
+    let candidates: Vec<_> = channels
+        .iter()
+        .filter(|channel| channel.status == 1 && channel_accepts_model(channel, model))
+        .map(|channel| RouteCandidate::Channel {
+            identity: resolve_channel_identity(&ChannelIdentityRow::from(channel)),
+            channel: channel.clone(),
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Err(PlanError::NoCandidateForModel(model.to_string()));
+    }
+    // Embeddings 只允许原生 OpenAI 端点，不受聊天协议转换或 Auth 账号偏好影响。
+    build_route_plan(
+        EndpointKind::Embeddings,
+        model,
+        candidates,
+        &FeatureFlags::default(),
+        body,
+        rng,
+    )
 }
 
 impl RoutePlan {
@@ -1382,6 +1467,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -1431,6 +1517,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -1462,6 +1549,7 @@ mod tests {
             })
             .to_string(),
             model_mapping_json: "{}".into(),
+            model_mapping_disabled: "[]".into(),
             attributes_json: "{}".into(),
             payload_json:
                 "{\"access_token\":\"route-secret\",\"refresh_token\":\"refresh-secret\"}".into(),
@@ -2551,7 +2639,7 @@ mod tests {
             "m",
             EndpointKind::Responses,
             &[],
-            &[account.clone()],
+            std::slice::from_ref(&account),
             &flags_off,
             &json!({}),
             &mut seeded(),
@@ -2567,7 +2655,7 @@ mod tests {
             "m",
             EndpointKind::ChatCompletions,
             &[],
-            &[account.clone()],
+            std::slice::from_ref(&account),
             &flags_off,
             &json!({}),
             &mut seeded(),
@@ -2579,7 +2667,7 @@ mod tests {
             "m",
             EndpointKind::Messages,
             &[],
-            &[account.clone()],
+            std::slice::from_ref(&account),
             &flags_off,
             &json!({}),
             &mut seeded(),
@@ -2592,7 +2680,7 @@ mod tests {
                 "m",
                 EndpointKind::CountTokens,
                 &[],
-                &[account],
+                std::slice::from_ref(&account),
                 &flags_off,
                 &json!({}),
                 &mut seeded(),
@@ -2848,6 +2936,162 @@ mod tests {
         }
     }
 
+    #[test]
+    fn responses_additional_tools_keeps_gemini_auth_conversion() {
+        let key = api_key(&[], &[]);
+        let channel = new_channel(
+            "native-responses",
+            "openai",
+            "custom",
+            "https://example.test/v1",
+            &["responses"],
+            5,
+            1,
+        );
+        let body = json!({
+            "model": "m",
+            "input": [{
+                "type": "additional_tools",
+                "tools": [{
+                    "type": "custom",
+                    "name": "exec_command"
+                }]
+            }]
+        });
+        let plan = authorize_and_plan_with_accounts(
+            &key,
+            "m",
+            EndpointKind::Responses,
+            &[channel],
+            &[gemini_account("gemini", "m")],
+            &flags(true),
+            &body,
+            &mut seeded(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.groups.len(), 2);
+        assert_eq!(plan.groups[0].tier, GroupTier::Native);
+        assert_eq!(
+            plan.groups[0].candidates[0].candidate.id(),
+            "native-responses"
+        );
+        assert_eq!(plan.groups[1].tier, GroupTier::Conversion);
+        assert_eq!(plan.groups[1].upstream_protocol, UpstreamProtocol::Gemini);
+        assert_eq!(plan.groups[1].candidates[0].candidate.id(), "gemini");
+        assert!(!plan
+            .config_errors
+            .iter()
+            .any(|error| error.contains("gemini") && error.contains("Responses additional_tools")));
+    }
+
+    #[test]
+    fn responses_additional_tools_skips_chat_conversion_channel() {
+        let key = api_key(&[], &[]);
+        let conversion = new_channel(
+            "chat-conversion",
+            "openai",
+            "custom",
+            "https://chat.example.test/v1",
+            &["chat_completions"],
+            10,
+            1,
+        );
+        let native = new_channel(
+            "native-responses",
+            "openai",
+            "custom",
+            "https://responses.example.test/v1",
+            &["responses"],
+            1,
+            1,
+        );
+        let body = json!({
+            "model": "m",
+            "input": [{
+                "type": "additional_tools",
+                "tools": [{
+                    "type": "custom",
+                    "name": "exec_command"
+                }]
+            }]
+        });
+
+        let plan = authorize_and_plan(
+            &key,
+            "m",
+            EndpointKind::Responses,
+            &[conversion, native],
+            &flags(true),
+            &body,
+            &mut seeded(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].tier, GroupTier::Native);
+        assert_eq!(plan.groups[0].candidates.len(), 1);
+        assert_eq!(
+            plan.groups[0].candidates[0].candidate.id(),
+            "native-responses"
+        );
+        assert!(plan
+            .config_errors
+            .iter()
+            .any(|error| error.contains("chat-conversion")
+                && error.contains("Responses additional_tools")));
+    }
+
+    #[test]
+    fn responses_empty_additional_tools_does_not_block_conversion() {
+        let key = api_key(&[], &[]);
+        let body = json!({
+            "model": "m",
+            "input": [{
+                "type": "additional_tools",
+                "tools": []
+            }]
+        });
+        let plan = authorize_and_plan_with_accounts(
+            &key,
+            "m",
+            EndpointKind::Responses,
+            &[],
+            &[gemini_account("gemini", "m")],
+            &flags(false),
+            &body,
+            &mut seeded(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].candidates[0].candidate.id(), "gemini");
+    }
+
+    #[test]
+    fn responses_without_additional_tools_keeps_gemini_auth_conversion() {
+        let key = api_key(&[], &[]);
+        let body = json!({
+            "model": "m",
+            "input": "hello"
+        });
+        let plan = authorize_and_plan_with_accounts(
+            &key,
+            "m",
+            EndpointKind::Responses,
+            &[],
+            &[gemini_account("gemini", "m")],
+            &flags(false),
+            &body,
+            &mut seeded(),
+        )
+        .unwrap();
+
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].tier, GroupTier::Conversion);
+        assert_eq!(plan.groups[0].upstream_protocol, UpstreamProtocol::Gemini);
+    }
+
     fn kimi_account(id: &str, model: &str, protocol: &str) -> AuthAccount {
         let mut account = auth_account(id, model, 1, 1);
         account.provider = "kimi".into();
@@ -2864,6 +3108,72 @@ mod tests {
         })
         .to_string();
         account
+    }
+
+    fn qoder_account(id: &str, model: &str, protocol: &str) -> AuthAccount {
+        let mut account = auth_account(id, model, 1, 1);
+        account.provider = "qoder".into();
+        account.model_states_json = json!({
+            "version": 1,
+            "models": [{
+                "id": model,
+                "status": "available",
+                "unavailable": false,
+                "next_retry_after": null,
+                "last_error": null,
+                "protocol": protocol
+            }]
+        })
+        .to_string();
+        account
+    }
+
+    /// 回归测试：模型快照的 `protocol` 存的是上游 key（`qoder:<key>`），
+    /// 必须与裸 `"qoder"` 一样解析到 agent_chat wire profile。
+    /// 此前的 bug：只匹配 `("qoder", "qoder")`，导致所有真实快照 503。
+    #[test]
+    fn qoder_protocol_with_upstream_key_resolves_agent_chat_profile() {
+        for protocol in ["qoder", "qoder:gmodel", "qoder:kmodel_latest", "qoder:auto"] {
+            let account = qoder_account("q1", "GLM-5.3", protocol);
+            let profile = resolve_auth_route_profile(&account, "GLM-5.3")
+                .unwrap_or_else(|| panic!("protocol {protocol:?} must resolve"));
+            assert_eq!(profile.provider, "qoder");
+            assert_eq!(profile.upstream_protocol, UpstreamProtocol::Qoder);
+            assert_eq!(profile.upstream_endpoint, "agent_chat");
+            assert_eq!(profile.non_stream_framing, AuthNonStreamFraming::Json);
+        }
+    }
+
+    /// Chat 下游请求路由到 Qoder 账号：Conversion 组、agent_chat 端点。
+    #[test]
+    fn qoder_account_routes_chat_requests_as_conversion_group() {
+        let key = api_key(&[], &[]);
+        let account = qoder_account("q1", "GLM-5.3", "qoder:gmodel");
+        let plan = authorize_and_plan_with_accounts(
+            &key,
+            "GLM-5.3",
+            EndpointKind::ChatCompletions,
+            &[],
+            &[account],
+            &flags(false),
+            &json!({}),
+            &mut seeded(),
+        )
+        .unwrap();
+        assert_eq!(plan.groups.len(), 1);
+        assert_eq!(plan.groups[0].tier, GroupTier::Conversion);
+        assert_eq!(plan.groups[0].upstream_protocol, UpstreamProtocol::Qoder);
+        assert_eq!(plan.groups[0].candidates[0].upstream_endpoint, "agent_chat");
+        assert_eq!(
+            plan.groups[0].candidates[0].auth_provider.as_deref(),
+            Some("qoder")
+        );
+    }
+
+    #[test]
+    fn qoder_non_qoder_protocol_fails_closed() {
+        let account = qoder_account("q2", "GLM-5.3", "mars");
+        assert!(resolve_auth_route_profile(&account, "GLM-5.3").is_none());
     }
 
     fn account_with_models(id: &str, provider: &str, models: Value, mapping: Value) -> AuthAccount {

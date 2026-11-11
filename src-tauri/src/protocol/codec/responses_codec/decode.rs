@@ -193,11 +193,9 @@ impl NonStreamDecoder for ResponsesNonStreamDecoder {
     }
 }
 
-#[allow(dead_code)]
 pub struct ResponsesMessagesNonStreamDecoder {
     pub(super) context: ConversionContext,
 }
-#[allow(dead_code)]
 impl ResponsesMessagesNonStreamDecoder {
     pub fn boxed(context: &ConversionContext) -> Box<dyn NonStreamDecoder + Send + Sync> {
         Box::new(Self {
@@ -216,11 +214,9 @@ impl NonStreamDecoder for ResponsesMessagesNonStreamDecoder {
     }
 }
 
-#[allow(dead_code)]
 pub struct MessagesResponsesNonStreamDecoder {
     pub(super) context: ConversionContext,
 }
-#[allow(dead_code)]
 impl MessagesResponsesNonStreamDecoder {
     pub fn boxed(context: &ConversionContext) -> Box<dyn NonStreamDecoder + Send + Sync> {
         Box::new(Self {

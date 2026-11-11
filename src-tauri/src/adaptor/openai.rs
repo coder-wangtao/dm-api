@@ -36,7 +36,7 @@ impl Adaptor for OpenAIAdaptor {
 
         match resp {
             Ok(r) => {
-                let latency: u64 = start.elapsed().as_millis() as u64;
+                let latency = start.elapsed().as_millis() as u64;
                 if r.status().is_success() {
                     Ok(TestResult {
                         success: true,
@@ -127,7 +127,6 @@ impl Adaptor for OpenAIAdaptor {
     }
 }
 
-//根据请求中的 model 字段，按照映射配置修改模型名称，然后对请求消息执行清洗处理，最后返回处理后的 JSON 请求体。
 pub fn apply_model_mapping(
     body: &serde_json::Value,
     mapping: &serde_json::Value,
@@ -177,11 +176,6 @@ pub fn apply_model_mapping(
 ///   content is set to `null` (which most APIs accept) instead of empty string.
 /// - Consecutive messages with the same role are not merged (leave that to
 ///   the upstream API or a future enhancement).
-/// 清理请求中的无效 assistant 消息，同时保留合法的工具调用（Tool Calls）消息，避免上游模型 API 因为消息格式不规范而报错。
-/// 删除没有内容的 assistant 消息。
-// 保留包含 tool_calls 的 assistant 消息。
-// 如果工具调用消息没有 content，则明确设置为 JSON null。
-// 不修改 user、system、developer 等其他角色的消息。
 pub fn sanitize_messages(mut body: serde_json::Value) -> serde_json::Value {
     let messages = match body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         Some(arr) => arr,

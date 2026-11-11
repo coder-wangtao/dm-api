@@ -12,6 +12,8 @@ export interface ChannelKey {
 
 /** Input for creating/updating a channel API key. */
 export interface ChannelKeyInput {
+  /** 已存在 Key 的数据库 ID：后端据此把掩码值识别为「未修改」并保全真实值。 */
+  id?: string;
   api_key: string;
   weight?: number;
   status?: number;
@@ -63,6 +65,8 @@ export interface Channel {
   last_probe_at: string | null;
   last_probe_ok: number | null;
   probe_latency_ms: number | null;
+  /** 主 Key 是否参与负载均衡（迁移 044）。1 = 启用，0 = 停用。 */
+  api_key_enabled?: number;
   /** Multi-key: extra API keys (masked in DTO, use getChannelExtraKeys for full). */
   extra_keys: ChannelKey[];
   /** 渠道级自定义上游请求头。 */
@@ -93,6 +97,8 @@ export interface CreateChannelInput {
   // draft when present; force_save saves despite failed/skipped tests as long
   // as the same draft was tested at least once. ---
   test_run_id?: string;
+  /** 本次按端点选择的测试模型，用于回执校验。 */
+  test_models?: Partial<Record<ChannelEndpoint, string>>;
   draft_fingerprint?: string;
   force_save?: boolean;
   /** Multi-key: additional API keys for load balancing. */
@@ -128,6 +134,8 @@ export interface UpdateChannelInput {
   clear_api_key?: boolean;
   // --- T07 draft-test receipt (see CreateChannelInput). ---
   test_run_id?: string;
+  /** 本次按端点选择的测试模型，用于回执校验。 */
+  test_models?: Partial<Record<ChannelEndpoint, string>>;
   draft_fingerprint?: string;
   force_save?: boolean;
   /** Multi-key: replacement for extra keys (full replace semantics). */
@@ -226,11 +234,49 @@ export interface RequestLog {
   client_cancelled: boolean | null;
   stream_committed: boolean | null;
   upstream_type: "channel" | "auth_account" | string;
+  /** 调用来源：请求来自哪个下游接入软件（迁移 047），历史行为 null。 */
+  client_name?: string | null;
   /** 日志记录级别；摘要列表也会返回该字段。 */
   detail_level?: "basic" | "brief" | "detailed" | string;
   /** 基本日志不提供正文，详细日志可按需加载。 */
   detail_available?: boolean;
   started_at?: string | null;
+  /** 首字耗时（毫秒，迁移 048）；流式为首个含内容的下游帧到达，历史行为 null。 */
+  ttft_ms?: number | null;
+  /** 上游物理尝试次数（迁移 048）；>1 表示发生过重试/故障切换。 */
+  attempts?: number;
+}
+
+/** 单条日志的按消息分类 token 拆分（迁移 048，上下文构成卡片）。 */
+export interface LogPromptPart {
+  kind:
+    | "system"
+    | "tools"
+    | "injected"
+    | "assistant"
+    | "tool_result"
+    | "chat"
+    | string;
+  items: number;
+  /** 校准后 token（无真实用量时 = est_tokens）。 */
+  tokens: number;
+  /** 纯本地估算 token。 */
+  est_tokens: number;
+  calibrated: boolean;
+}
+
+/** 单条日志的一次上游物理尝试明细（迁移 048，failover 时间线）。 */
+export interface LogAttempt {
+  seq: number;
+  channel_id: string | null;
+  channel_name: string | null;
+  upstream_model: string | null;
+  status_code: number | null;
+  outcome: string | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  ttft_ms: number | null;
+  is_final: boolean;
 }
 
 // Auth account contracts intentionally expose only renderer-safe account
@@ -285,6 +331,8 @@ export interface AuthAccount {
   models: AuthModelState[];
   quota: AuthQuotaState | null;
   model_mapping?: Record<string, string | string[]>;
+  /** 被关闭的映射对（迁移 042）：[from, to][]。空 = 全部开启。 */
+  model_mapping_disabled?: string[][];
   expires_at: string | null;
   hasRefreshToken: boolean;
   last_refreshed_at: string | null;
@@ -324,6 +372,38 @@ export interface AuthProviderInfo {
   supportsImport: boolean;
   supportsExport: boolean;
   supportsQuota: boolean;
+  supportsResetCredit?: boolean;
+}
+
+export interface AuthResetCredit {
+  id: string;
+  resetType: string;
+  status: string;
+  grantedAt: string | null;
+  expiresAt: string | null;
+  title: string | null;
+  description: string | null;
+}
+
+export interface AuthResetCreditsSnapshot {
+  availableCount: number | null;
+  credits: AuthResetCredit[];
+  fallbackUrl: string;
+}
+
+export interface AuthResetOperationResult {
+  operationId: string;
+  status: string;
+  code:
+    | "reset"
+    | "nothing_to_reset"
+    | "no_credit"
+    | "already_redeemed"
+    | string
+    | null;
+  quotaRefreshStatus: "refreshed" | "failed" | null;
+  windowsReset: number;
+  fallbackUrl: string;
 }
 
 export interface DeviceVerification {
@@ -385,6 +465,7 @@ export interface AuthUpdateInput {
   priority: number;
   weight: number;
   model_mapping?: Record<string, string | string[]>;
+  model_mapping_disabled?: string[][];
 }
 
 export interface SecurityFinding {
@@ -424,6 +505,13 @@ export interface DashboardStats {
   total_api_keys: number;
   total_requests: number;
   total_tokens: number;
+  total_knowledge_bases: number;
+  total_kb_documents: number;
+  total_kb_chunks: number;
+  total_wiki_projects: number;
+  total_wiki_pages: number;
+  /** 今日平均首字耗时（毫秒，迁移 048；无数据为 0）。 */
+  avg_ttft_ms: number;
 }
 
 export interface ModelStats {
@@ -443,6 +531,30 @@ export interface TokenTrendPoint {
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
+  total_tokens: number;
+  request_count: number;
+}
+
+/** 近 N 小时按消息分类聚合的 token 构成（迁移 048）。 */
+export interface PromptPartStat {
+  kind: string;
+  tokens: number;
+}
+
+/** 路由图渠道侧流量数据（近 N 小时聚合，迁移 048）。 */
+export interface RouteFlow {
+  channel_id: string;
+  channel_name: string;
+  total_tokens: number;
+  request_count: number;
+  avg_ttft_ms: number;
+  fail_count: number;
+  last_at: string;
+}
+
+/** 单日 token 消耗聚合（热力图数据源，UTC 天）。 */
+export interface DailyTokenPoint {
+  day: string;
   total_tokens: number;
   request_count: number;
 }
@@ -468,8 +580,19 @@ export interface Settings {
   security_block_on_critical: boolean;
   routing_prefer_auth_accounts: boolean;
   routing_prefer_same_protocol: boolean;
+  // LLM OCR（扫描版 PDF 识别）全局配置
+  ocr_enabled: boolean;
+  ocr_max_pages: number;
+  ocr_concurrency: number;
+  ocr_dpi: number;
   log_detail_level: "basic" | "detailed" | string;
   log_retention_days: number;
+  // OTLP 导出（request_log → OTLP/HTTP JSON span，默认关闭）
+  otlp_enabled: boolean;
+  otlp_endpoint: string;
+  otlp_headers: string;
+  otlp_interval_secs: number;
+  otlp_batch_size: number;
   // 渠道主动健康探测
   probe_enabled: boolean;
   probe_interval_secs: number;
@@ -554,6 +677,7 @@ export type ChannelProvider =
   | "doubao"
   | "doubao_coding_plan"
   | "moonshot"
+  | "stepfun"
   | "anthropic"
   | "ollama"
   | "custom";
@@ -665,6 +789,7 @@ export interface DraftChannelTestInput {
   /** 显式清除已保存 Key（T02）：为 true 时后端把留空的 Key 解析为空串，而非沿用已存 Key。 */
   clear_api_key?: boolean;
   models: string[];
+  test_models?: Partial<Record<ChannelEndpoint, string>>;
   priority?: number;
   weight?: number;
   config?: Record<string, unknown>;
@@ -700,4 +825,101 @@ export interface PromptTemplate {
   content: string;
   active: boolean;
   created_at: string;
+}
+
+// ── 软件对接（Software）───────────────────────────────────────────────────────
+// 连接器实例：一个本地软件/通用方案 + 用户配置，经 MCP 暴露为 software__ 工具
+
+export interface SoftwareInstance {
+  id: number;
+  connector_id: string;
+  name: string;
+  config: Record<string, unknown>;
+  /** 1 = 已在 /mcp 暴露工具 */
+  mcp_enabled: number;
+  /** auto / confirm_high_risk / confirm_all */
+  approval_mode: string;
+  /** 1 = 实例启用 */
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateSoftwareInstanceInput {
+  connector_id: string;
+  name: string;
+  config: Record<string, unknown>;
+  mcp_enabled: boolean;
+  approval_mode: string;
+}
+
+export interface UpdateSoftwareInstanceInput {
+  id: number;
+  name?: string;
+  config?: Record<string, unknown>;
+  mcp_enabled?: boolean;
+  approval_mode?: string;
+}
+
+export interface SoftwareConnectorInfo {
+  id: string;
+  label: string;
+  description: string;
+  platforms: string;
+  sample_config: Record<string, unknown>;
+}
+
+export interface SoftwareToolPreview {
+  name: string;
+  mcp_name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  risk: string;
+  risk_label: string;
+}
+
+export interface SoftwareToolLog {
+  id: number;
+  tool: string;
+  risk: string;
+  args_summary: string;
+  status: string;
+  error: string;
+  duration_ms: number;
+  created_at: string;
+}
+
+/** 内置接入预设（扫描命中的建议方案） */
+export interface ConnectorSuggestion {
+  connector_id: string;
+  connector_label: string;
+  hint: string;
+  config: Record<string, unknown>;
+}
+
+/** 扫描到的本机软件 */
+export interface ScannedApp {
+  name: string;
+  path: string;
+  source: string;
+  suggestion: ConnectorSuggestion | null;
+}
+
+/** CLI-Hub（CLI-Anything 社区）目录条目 */
+export interface ClihubEntry {
+  name: string;
+  display_name: string;
+  description: string;
+  entry_point: string;
+  category: string;
+  requires?: string | null;
+  installed: boolean;
+  /** true = 实时 cli-hub 目录；false = hub 未安装时的内置精选 */
+  live: boolean;
+}
+
+/** CLI-Hub 目录（hub 可用性 + 条目列表） */
+export interface ClihubCatalog {
+  hub_available: boolean;
+  entries: ClihubEntry[];
 }

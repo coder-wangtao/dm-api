@@ -5,10 +5,10 @@ use uuid::Uuid;
 
 /// Get the base wiki directory for all projects.
 pub fn wiki_base_dir() -> PathBuf {
-    let data_dir = std::env::var_os("WALIAPI_DATA_DIR")
+    let data_dir = std::env::var_os("DAMAOAPI_DATA_DIR")
         .map(PathBuf::from)
-        .or_else(|| dirs::data_local_dir().map(|path| path.join("waliapi")))
-        .unwrap_or_else(|| PathBuf::from("./waliapi-data"));
+        .or_else(|| dirs::data_local_dir().map(|path| path.join("damaoapi")))
+        .unwrap_or_else(|| PathBuf::from("./damaoapi-data"));
     let base = data_dir.join("wiki");
     let _ = std::fs::create_dir_all(&base);
     base
@@ -369,7 +369,7 @@ mod tests {
     fn wiki_paths_reject_symbolic_link_components() {
         use std::os::unix::fs::symlink;
 
-        let root = std::env::temp_dir().join(format!("waliapi-wiki-path-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("damaoapi-wiki-path-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         symlink(std::env::temp_dir(), root.join("escape")).unwrap();
         assert!(reject_symlink_components(&root, Path::new("escape/file.md")).is_err());

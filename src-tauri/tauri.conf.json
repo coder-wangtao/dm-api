@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DamaoAPI",
-  "version": "0.3.4",
+  "productName": "DaMaoAPI",
+  "version": "0.4.4",
   "identifier": "damaoapi.wangtao.cn",
   "mainBinaryName": "damaoapi",
   "build": {
@@ -13,13 +13,13 @@
   "app": {
     "windows": [
       {
-        "title": "DamaoAPI - Local LLM Gateway",
+        "title": "DaMaoAPI - Local LLM Gateway",
         "width": 1440,
         "height": 900,
         "minWidth": 1000,
         "minHeight": 680,
         "decorations": true,
-        "dragDropEnabled": false,
+        "dragDropEnabled": true,
         "resizable": true,
         "center": true
       }
@@ -30,7 +30,9 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
+    "resources": ["resources/pdfium/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,5 +40,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMUVGQjFEMEZEOTlFQwpSV1RzbWYzUXNlL0JEenoxYXpWSTJBUFQzcWNYOERyajZTam5GWXk1S1NDZ2VBcC96N0VTaW9GNgo="
+    }
   }
 }

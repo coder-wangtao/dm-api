@@ -19,7 +19,6 @@ pub struct Dispatcher;
 impl Dispatcher {
     /// Build an ordered failover queue based on priority, weight, and model
     /// support.  Kept byte-compatible with the pre-refactor behavior.
-    /// 筛选可用渠道
     pub fn select_channels(channels: &[Channel], requested_model: &str) -> Vec<Channel> {
         let candidates: Vec<Channel> = channels
             .iter()
@@ -46,7 +45,7 @@ impl Dispatcher {
             return Vec::new();
         }
 
-        let mut rng = rand::rng(); //创建一个随机数生成器。
+        let mut rng = rand::rng();
         order_by_priority_weight(candidates, &mut rng)
     }
 
@@ -104,6 +103,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -148,27 +148,3 @@ mod tests {
         assert_eq!(ids, vec!["c1", "c2", "c3"]);
     }
 }
-
-
-
-//假设现在有 6 个 API 渠道：
-// A	3	50
-// B	3	30
-// C	3	20
-// D	2	80
-// E	2	20
-// F	1	100
-
-//按照 Priority 降序排序
-// A(3, 50)
-// B(3, 30)
-// C(3, 20)
-// D(2, 80)
-// E(2, 20)
-// F(1, 100)
-
-// [A, B, C] => 根据权重排序[B, A, C]
-
-// [C,D] => [B, A, C, D, E]
-
-// [E,F] => [B, A, C, D, E, F]

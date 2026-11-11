@@ -1,7 +1,7 @@
-//! MCP 聚合连接器（路径 E）：把外部 MCP Server 的工具代理进 WaLiAPI 的 /mcp。
+//! MCP 聚合连接器（路径 E）：把外部 MCP Server 的工具代理进 DaMaoAPI 的 /mcp。
 //!
 //! 社区已有大量现成 MCP Server（filesystem、playwright、各类软件官方 MCP），
-//! 通过本连接器接入后其工具自动出现在 WaLiAPI 的 tools/list，一次投入持续受益。
+//! 通过本连接器接入后其工具自动出现在 DaMaoAPI 的 tools/list，一次投入持续受益。
 //!
 //! 配置示例：
 //! ```json
@@ -215,7 +215,7 @@ impl SoftwareConnector for GenericMcpConnector {
         "MCP 聚合网关"
     }
     fn description(&self) -> &'static str {
-        "接入社区现成 MCP Server（stdio / Streamable HTTP），其工具自动代理进 WaLiAPI 的 /mcp，工具名形如 fs__read_file"
+        "接入社区现成 MCP Server（stdio / Streamable HTTP），其工具自动代理进 DaMaoAPI 的 /mcp，工具名形如 fs__read_file"
     }
     fn platforms(&self) -> &'static str {
         "macOS / Windows / Linux"

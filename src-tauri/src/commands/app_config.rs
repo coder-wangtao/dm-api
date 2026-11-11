@@ -137,22 +137,22 @@ const APPS: &[AppDef] = &[
         name: "openclaw",
         label: "OpenClaw",
         icon: "bot",
-        description: "开源 Agent 框架，读取配置文件中的 provider 段",
-        config_format: "JSON (~/.qclaw/)",
+        description: "开源 Agent 框架，读取 openclaw.json 中的 models.providers 段",
+        config_format: "JSON (~/.openclaw/openclaw.json)",
         download_url: "https://openclaw.ai",
-        config_dir_fn: || home_dir().join(".qclaw"),
-        config_file: "config.json",
+        config_dir_fn: || home_dir().join(".openclaw"),
+        config_file: "openclaw.json",
         check_installed_fn: |dir| dir.exists(),
     },
     AppDef {
         name: "hermes",
         label: "Hermes Agent",
         icon: "code",
-        description: "Hermes Agent 框架，读取配置文件中的 custom_providers 段",
-        config_format: "TOML/JSON (Hermes config)",
+        description: "Hermes Agent 框架，读取 config.yaml 中的 model 与 custom_providers 段",
+        config_format: "YAML (~/.hermes/config.yaml)",
         download_url: "https://github.com/openai/hermes",
         config_dir_fn: || home_dir().join(".hermes"),
-        config_file: "config.json",
+        config_file: "config.yaml",
         check_installed_fn: |dir| dir.exists(),
     },
     AppDef {
@@ -161,7 +161,7 @@ const APPS: &[AppDef] = &[
         icon: "code",
         description: "AI Coding Assistant，写入 ai_settings.json 中的 provider 和 apiKey 配置",
         config_format: "JSON (~/Library/Application Support/DaMaoCode/ai_settings.json)",
-        download_url: "https://damaocode.xiaofuge.cn/",
+        download_url: "https://damaocode.wangtao.cn/",
         #[cfg(target_os = "macos")]
         config_dir_fn: || home_dir().join("Library/Application Support/DaMaoCode"),
         #[cfg(target_os = "windows")]
@@ -202,6 +202,17 @@ fn read_json_file<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Result<T, S
 fn write_json_file<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), String> {
     let json = to_pretty_json(data).map_err(|e| format!("序列化 JSON 失败: {e}"))?;
     atomic_write(path, json.as_bytes())
+}
+
+/// 写 YAML 配置（Hermes 的 config.yaml）。首行注明本文件由 DaMaoAPI 写入，
+/// 提醒注释不会保留、原文件在 `.damaoapi-backup`。
+fn write_yaml_file<T: Serialize>(path: &PathBuf, data: &T) -> Result<(), String> {
+    let yaml = serde_yaml::to_string(data).map_err(|e| format!("序列化 YAML 失败: {e}"))?;
+    let text = format!(
+        "# 本文件由 DaMaoAPI 写入；YAML 注释不会被保留，原文件已备份为同名 .damaoapi-backup。\n{}\n",
+        yaml.trim_start_matches("---\n")
+    );
+    atomic_write(path, text.as_bytes())
 }
 
 /// 自定义 JSON pretty printer，不转义 non-ASCII 字符
@@ -300,10 +311,20 @@ fn backup_path(config_path: &PathBuf) -> PathBuf {
 }
 
 fn backup_config(config_path: &PathBuf) -> Result<(), String> {
-    if config_path.exists() {
-        let content = fs::read(config_path).map_err(|e| format!("读取配置失败: {e}"))?;
-        atomic_write(&backup_path(config_path), &content)?;
+    let backup = backup_path(config_path);
+    // 幂等：`.damaoapi-backup` 永远代表首次应用前的原始字节，重复应用
+    // 或 Hermes 自己的写入流程都不能用当前网关配置覆盖它。
+    if backup.exists() {
+        if backup.is_file() {
+            return Ok(());
+        }
+        return Err(format!("备份路径不是文件: {}", backup.display()));
     }
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let content = fs::read(config_path).map_err(|e| format!("读取配置失败: {e}"))?;
+    atomic_write(&backup, &content)?;
     Ok(())
 }
 
@@ -325,14 +346,14 @@ fn restore_config(config_path: &PathBuf) -> Result<(), String> {
         if config_path.exists() {
             fs::remove_file(config_path).map_err(|e| format!("删除配置失败: {e}"))?;
         }
-        let _ = fs::remove_file(&absent_marker);
+        fs::remove_file(&absent_marker).map_err(|e| format!("删除缺失标记失败: {e}"))?;
         return Ok(());
     }
     let backup = backup_path(config_path);
     if backup.exists() {
         let content = fs::read(&backup).map_err(|e| format!("读取备份失败: {e}"))?;
         atomic_write(config_path, &content)?;
-        let _ = fs::remove_file(&backup);
+        fs::remove_file(&backup).map_err(|e| format!("删除备份失败: {e}"))?;
         Ok(())
     } else {
         Err("没有找到备份文件".to_string())
@@ -400,22 +421,37 @@ fn write_claude_code_transactional(
     }
     if created_absent_marker {
         if let Err(error) = atomic_write(&absent, b"") {
-            if created_backup {
-                let _ = fs::remove_file(&backup);
-            }
-            return Err(error);
+            let cleanup = if created_backup {
+                fs::remove_file(&backup)
+                    .map_err(|cleanup_error| format!("清理备份失败: {cleanup_error}"))
+                    .err()
+            } else {
+                None
+            };
+            return Err(match cleanup {
+                Some(cleanup_error) => format!("{error}；{cleanup_error}"),
+                None => error,
+            });
         }
     }
 
     if let Err(error) = atomic_write(&settings_path, json.as_bytes()) {
         // 本次失败不能改变恢复资料的可见状态。
+        let mut cleanup_errors = Vec::new();
         if created_backup {
-            let _ = fs::remove_file(&backup);
+            if let Err(cleanup_error) = fs::remove_file(&backup) {
+                cleanup_errors.push(format!("清理备份失败: {cleanup_error}"));
+            }
         }
         if created_absent_marker {
-            let _ = fs::remove_file(&absent);
+            if let Err(cleanup_error) = fs::remove_file(&absent) {
+                cleanup_errors.push(format!("清理缺失标记失败: {cleanup_error}"));
+            }
         }
-        return Err(error);
+        if cleanup_errors.is_empty() {
+            return Err(error);
+        }
+        return Err(format!("{error}；{}", cleanup_errors.join("；")));
     }
     Ok(())
 }
@@ -848,12 +884,20 @@ fn write_opencode(
 ) -> Result<(), String> {
     let config_path = config_dir.join("opencode.json");
     let mut config: serde_json::Value = if config_path.exists() {
-        read_json_file(&config_path).unwrap_or_else(|_| serde_json::json!({}))
+        read_json_file(&config_path)?
     } else {
         serde_json::json!({"$schema": "https://opencode.ai/config.json"})
     };
 
-    if let Some(obj) = config.as_object_mut() {
+    let obj = config
+        .as_object_mut()
+        .ok_or_else(|| "OpenCode 配置根节点必须是对象，已取消写入以保护原配置".to_string())?;
+    {
+        // opencode 把 `models` 的**键**当作请求里的 model（`name` 只是显示名），
+        // 键必须是网关认识的模型名：写占位名会被服务端以 "No available upstream
+        // candidate" 拒掉，客户端侧看起来只是“没有响应”。
+        let mut models = serde_json::Map::new();
+        models.insert(model.to_string(), serde_json::json!({ "name": model }));
         let provider = serde_json::json!({
             "npm": "@ai-sdk/openai-compatible",
             "name": "DaMaoAPI Gateway",
@@ -861,18 +905,27 @@ fn write_opencode(
                 "baseURL": format!("{}/v1", damaoapi_url),
                 "apiKey": damaoapi_key
             },
-            "models": {
-                "damaoapi-default": { "name": model }
-            }
+            "models": serde_json::Value::Object(models)
         });
-        if let Some(providers) = obj.get_mut("provider").and_then(|v| v.as_object_mut()) {
-            providers.insert("damaoapi".to_string(), provider);
-        } else {
-            obj.insert(
-                "provider".to_string(),
-                serde_json::json!({"damaoapi": provider}),
-            );
+        match obj.get_mut("provider") {
+            Some(value) => {
+                let providers = value.as_object_mut().ok_or_else(|| {
+                    "OpenCode 的 provider 必须是对象，已取消写入以保护原配置".to_string()
+                })?;
+                providers.insert("damaoapi".to_string(), provider);
+            }
+            None => {
+                obj.insert(
+                    "provider".to_string(),
+                    serde_json::json!({"damaoapi": provider}),
+                );
+            }
         }
+        // 顶层 `model` 决定默认模型；缺省时 opencode 会退回第一个可用模型。
+        obj.insert(
+            "model".to_string(),
+            serde_json::json!(format!("damaoapi/{model}")),
+        );
     }
 
     write_json_file(&config_path, &config)
@@ -884,21 +937,114 @@ fn write_openclaw(
     damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
-    let config_path = config_dir.join("config.json");
+    let config_path = config_dir.join("openclaw.json");
     let mut config: serde_json::Value = if config_path.exists() {
-        read_json_file(&config_path).unwrap_or_else(|_| serde_json::json!({}))
+        read_json_file(&config_path)?
     } else {
         serde_json::json!({})
     };
 
-    if let Some(obj) = config.as_object_mut() {
-        obj.insert(
-            "baseUrl".to_string(),
-            serde_json::json!(format!("{}/v1", damaoapi_url)),
+    let obj = config
+        .as_object_mut()
+        .ok_or_else(|| "OpenClaw 配置根节点必须是对象，已取消写入以保护原配置".to_string())?;
+
+    // OpenClaw 的 provider 定义在 `models.providers.<id>`，默认模型是
+    // `agents.defaults.model.primary` 里的 `provider/model` 引用；旧版写的平铺
+    // `{baseUrl, apiKey, model}` 既不在正确路径也不在正确结构里，读不到。
+    let provider_id = "damaoapi";
+    let model_ref = format!("{provider_id}/{model}");
+    let provider_prefix = format!("{provider_id}/");
+    let base_url = format!("{}/v1", damaoapi_url);
+
+    {
+        let models = obj
+            .entry("models".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let models_obj = models
+            .as_object_mut()
+            .ok_or_else(|| "OpenClaw 的 models 必须是对象，已取消写入以保护原配置".to_string())?;
+        // `merge` 保留 OpenClaw 内置的模型目录，只追加我们的 provider。
+        models_obj
+            .entry("mode".to_string())
+            .or_insert_with(|| serde_json::json!("merge"));
+        let providers = models_obj
+            .entry("providers".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let providers_obj = providers.as_object_mut().ok_or_else(|| {
+            "OpenClaw 的 models.providers 必须是对象，已取消写入以保护原配置".to_string()
+        })?;
+        providers_obj.insert(
+            provider_id.to_string(),
+            serde_json::json!({
+                "baseUrl": base_url,
+                "apiKey": damaoapi_key,
+                "api": "openai-completions",
+                "models": [{ "id": model, "name": model }]
+            }),
         );
-        obj.insert("apiKey".to_string(), serde_json::json!(damaoapi_key));
-        obj.insert("model".to_string(), serde_json::json!(model));
-        obj.insert("_damaoapi".to_string(), serde_json::json!(true));
+
+        let agents = obj
+            .entry("agents".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let agents_obj = agents
+            .as_object_mut()
+            .ok_or_else(|| "OpenClaw 的 agents 必须是对象，已取消写入以保护原配置".to_string())?;
+        let defaults = agents_obj
+            .entry("defaults".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let defaults_obj = defaults.as_object_mut().ok_or_else(|| {
+            "OpenClaw 的 agents.defaults 必须是对象，已取消写入以保护原配置".to_string()
+        })?;
+        let model_cfg = defaults_obj
+            .entry("model".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let model_obj = model_cfg.as_object_mut().ok_or_else(|| {
+            "OpenClaw 的 agents.defaults.model 必须是对象，已取消写入以保护原配置".to_string()
+        })?;
+        model_obj.insert("primary".to_string(), serde_json::json!(model_ref.clone()));
+        // 未进 allowlist 的模型不会出现在可选列表里。
+        let allow = defaults_obj
+            .entry("models".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let allow_obj = allow.as_object_mut().ok_or_else(|| {
+            "OpenClaw 的 agents.defaults.models 必须是对象，已取消写入以保护原配置".to_string()
+        })?;
+        // damaoapi provider 的模型目录由本网关维护：清掉历史遗留的
+        // `damaoapi/*` 条目，避免留下网关已不认识的模型名。
+        allow_obj.retain(|key, _| !key.starts_with(&provider_prefix));
+        allow_obj.insert(model_ref.clone(), serde_json::json!({}));
+        // 模型可见性策略：OpenClaw 只把 `modelPolicy.allow` 里的模型暴露给
+        // agent，但**没有 modelPolicy 时表示不限制**（allowAny）。因此只在用户
+        // 已经配置了它的情况下维护 allow：凭空新建一个只含本网关模型的白名单，
+        // 会把该用户其它 provider 的模型全部挡掉。
+        if let Some(policy) = defaults_obj.get_mut("modelPolicy") {
+            let Some(policy_obj) = policy.as_object_mut() else {
+                return Err(
+                    "OpenClaw 的 agents.defaults.modelPolicy 不是对象，已取消写入以保护原配置"
+                        .to_string(),
+                );
+            };
+            let policy_allow = policy_obj
+                .entry("allow".to_string())
+                .or_insert_with(|| serde_json::json!([]));
+            let Some(policy_allow_arr) = policy_allow.as_array_mut() else {
+                return Err(
+                            "OpenClaw 的 agents.defaults.modelPolicy.allow 不是数组，已取消写入以保护原配置"
+                                .to_string(),
+                        );
+            };
+            policy_allow_arr.retain(|item| {
+                item.as_str()
+                    .map(|value| !value.starts_with(&provider_prefix))
+                    .unwrap_or(true)
+            });
+            policy_allow_arr.push(serde_json::json!(model_ref.clone()));
+        }
+        // OpenClaw 的配置 schema 对根级未知键做严格校验，带上 `_damaoapi` 标记会让
+        // 它直接以 `Invalid config ... Unrecognized key: "_damaoapi"` 拒绝启动。
+        // 「是否已应用」改由 `models.providers.damaoapi` 判断（见 `detect_applied`），
+        // 这里顺手清掉历史版本写入的标记，让老配置在下次应用时自愈。
+        let _ = obj.remove("_damaoapi");
     }
 
     write_json_file(&config_path, &config)
@@ -910,47 +1056,76 @@ fn write_hermes(
     damaoapi_key: &str,
     model: &str,
 ) -> Result<(), String> {
-    let config_path = config_dir.join("config.json");
+    // Hermes 的主配置是 `~/.hermes/config.yaml`：provider 走 `custom_providers`
+    // 列表（元素用 `name`），默认模型由 `model` 段的 `provider: custom:<name>` +
+    // `default` + `base_url` 决定。用 serde_yaml 读回现有配置再合并，只覆盖
+    // model 段与本网关的条目；YAML 重写不保留注释，故写入前先备份原文件。
+    let config_path = config_dir.join("config.yaml");
     let mut config: serde_json::Value = if config_path.exists() {
-        read_json_file(&config_path).unwrap_or_else(|_| serde_json::json!({}))
+        let raw = fs::read_to_string(&config_path).map_err(|e| format!("读取文件失败: {e}"))?;
+        if raw.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_yaml::from_str::<serde_json::Value>(&raw)
+                .map_err(|e| format!("解析 ~/.hermes/config.yaml 失败（原文件未改动）：{e}"))?
+        }
     } else {
         serde_json::json!({})
     };
-
-    if let Some(obj) = config.as_object_mut() {
-        if let Some(providers) = obj
-            .get_mut("custom_providers")
-            .and_then(|v| v.as_array_mut())
-        {
-            providers.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some("damaoapi"));
-            let mut entry = serde_json::Map::new();
-            entry.insert("id".to_string(), serde_json::json!("damaoapi"));
-            entry.insert("name".to_string(), serde_json::json!("DaMaoAPI Gateway"));
-            entry.insert(
-                "base_url".to_string(),
-                serde_json::json!(format!("{}/v1", damaoapi_url)),
-            );
-            entry.insert("api_key".to_string(), serde_json::json!(damaoapi_key));
-            entry.insert("default_model".to_string(), serde_json::json!(model));
-            providers.push(serde_json::Value::Object(entry));
-        } else {
-            let mut entry = serde_json::Map::new();
-            entry.insert("id".to_string(), serde_json::json!("damaoapi"));
-            entry.insert("name".to_string(), serde_json::json!("DaMaoAPI Gateway"));
-            entry.insert(
-                "base_url".to_string(),
-                serde_json::json!(format!("{}/v1", damaoapi_url)),
-            );
-            entry.insert("api_key".to_string(), serde_json::json!(damaoapi_key));
-            entry.insert("default_model".to_string(), serde_json::json!(model));
-            obj.insert(
-                "custom_providers".to_string(),
-                serde_json::Value::Array(vec![serde_json::Value::Object(entry)]),
-            );
-        }
+    if !config.is_object() {
+        return Err("Hermes 配置根节点必须是对象，已取消写入以保护原配置".to_string());
     }
 
-    write_json_file(&config_path, &config)
+    let provider_id = "damaoapi";
+    let base_url = format!("{}/v1", damaoapi_url);
+    let obj = config
+        .as_object_mut()
+        .ok_or_else(|| "Hermes 配置根节点必须是对象，已取消写入以保护原配置".to_string())?;
+    {
+        let mut entry = serde_json::Map::new();
+        entry.insert("name".to_string(), serde_json::json!(provider_id));
+        entry.insert("base_url".to_string(), serde_json::json!(base_url.clone()));
+        entry.insert("api_key".to_string(), serde_json::json!(damaoapi_key));
+        entry.insert(
+            "api_mode".to_string(),
+            serde_json::json!("chat_completions"),
+        );
+        let mut models = serde_json::Map::new();
+        models.insert(model.to_string(), serde_json::json!({}));
+        entry.insert("models".to_string(), serde_json::Value::Object(models));
+
+        let providers = obj
+            .entry("custom_providers".to_string())
+            .or_insert_with(|| serde_json::json!([]));
+        let list = providers.as_array_mut().ok_or_else(|| {
+            "Hermes 的 custom_providers 必须是数组，已取消写入以保护原配置".to_string()
+        })?;
+        // 旧版本写的是 `id` 字段（Hermes 不认），这里按 `name` 去重重建。
+        list.retain(|p| p.get("name").and_then(serde_json::Value::as_str) != Some(provider_id));
+        list.push(serde_json::Value::Object(entry));
+
+        let model_cfg = obj
+            .entry("model".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let model_obj = model_cfg
+            .as_object_mut()
+            .ok_or_else(|| "Hermes 的 model 必须是对象，已取消写入以保护原配置".to_string())?;
+        model_obj.insert(
+            "provider".to_string(),
+            serde_json::json!(format!("custom:{provider_id}")),
+        );
+        model_obj.insert("default".to_string(), serde_json::json!(model));
+        model_obj.insert("base_url".to_string(), serde_json::json!(base_url));
+        model_obj.insert(
+            "api_mode".to_string(),
+            serde_json::json!("chat_completions"),
+        );
+        obj.insert("_damaoapi".to_string(), serde_json::json!(true));
+    }
+
+    // YAML 重写不留注释：先留一份 `.damaoapi-backup` 作为退路。
+    backup_config(&config_path)?;
+    write_yaml_file(&config_path, &config)
 }
 
 fn write_damaocode(
@@ -1110,6 +1285,11 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
                         .and_then(|x| x.as_str())
                         .is_some_and(|s| !s.is_empty())
                     && env.and_then(|e| e.get("ANTHROPIC_API_KEY")).is_none()
+            } else if app_name == "openclaw" {
+                // OpenClaw 不允许根级未知键，所以不能用 `_damaoapi` 标记认领写入的
+                // 配置；`models.providers.damaoapi` 本身就是「已由 DaMaoAPI 写入」的
+                // 证据（与 opencode 分支同一思路）。
+                v.pointer("/models/providers/damaoapi").is_some()
             } else {
                 v.get("_damaoapi").and_then(|v| v.as_bool()).unwrap_or(false)
             }
@@ -1124,7 +1304,9 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
             v.pointer("/provider/damaoapi").is_some()
         }
         "hermes" => {
-            let v: serde_json::Value = match serde_json::from_str(&content) {
+            // Hermes 的主配置是 YAML（`config.yaml`），必须用 YAML 解析器；
+            // provider 名在 `custom_providers[].name`（`id` 是不被识别的旧字段）。
+            let v: serde_json::Value = match serde_yaml::from_str(&content) {
                 Ok(v) => v,
                 Err(_) => return false,
             };
@@ -1132,7 +1314,7 @@ fn detect_applied(config_path: &PathBuf, app_name: &str) -> bool {
                 .and_then(|v| v.as_array())
                 .and_then(|arr| {
                     arr.iter()
-                        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some("damaoapi"))
+                        .find(|p| p.get("name").and_then(|v| v.as_str()) == Some("damaoapi"))
                 })
                 .is_some()
         }
@@ -1244,12 +1426,21 @@ pub async fn apply_app_config_impl(
     } else if detect_applied(&config_path, app_name) {
         // 已处于网关配置状态，保留最初的备份，直接重写即可
     } else if config_path.exists() {
-        let _ = backup_config(&config_path);
-        let _ = fs::remove_file(absent_marker_path(&config_path));
+        backup_config(&config_path)?;
+        let absent = absent_marker_path(&config_path);
+        if absent.exists() {
+            fs::remove_file(&absent).map_err(|e| format!("删除缺失标记失败: {e}"))?;
+        }
     } else {
         // 原配置不存在：打标记，恢复时删除写入的配置
-        let _ = atomic_write(&absent_marker_path(&config_path), b"");
-        let _ = fs::remove_file(backup_path(&config_path));
+        let absent = absent_marker_path(&config_path);
+        if !absent.exists() {
+            atomic_write(&absent, b"")?;
+        }
+        let backup = backup_path(&config_path);
+        if backup.exists() {
+            fs::remove_file(&backup).map_err(|e| format!("删除旧备份失败: {e}"))?;
+        }
     }
 
     let result = match app_name {
@@ -1287,12 +1478,17 @@ pub async fn apply_app_config_impl(
             })
         }
         Err(e) => {
-            if app_name != "claude-code" {
-                let _ = restore_config(&config_path);
-            }
+            let message = if app_name == "claude-code" {
+                e
+            } else {
+                match restore_config(&config_path) {
+                    Ok(()) => e,
+                    Err(restore_error) => format!("{e}；恢复原配置失败: {restore_error}"),
+                }
+            };
             Ok(ApplyResult {
                 success: false,
-                message: e,
+                message,
                 auth_warning: None,
             })
         }
@@ -1757,5 +1953,272 @@ mod tests {
         assert!(write_claude_code_transactional(&dir, "http://gateway", "key", "model").is_err());
         assert_eq!(fs::read(&path).unwrap(), b"not-json");
         assert!(!backup_path(&path).exists());
+    }
+
+    #[test]
+    fn backup_is_idempotent_and_restore_returns_first_original() {
+        let dir = temp_dir("backup-idempotent");
+        let path = dir.join("config.yaml");
+        let original = b"model: user\n";
+        fs::write(&path, original).unwrap();
+
+        backup_config(&path).unwrap();
+        fs::write(&path, b"model: damaoapi\n").unwrap();
+        backup_config(&path).unwrap();
+        assert_eq!(fs::read(backup_path(&path)).unwrap(), original);
+
+        restore_config(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// opencode 把 `models` 的键当作请求的 model：必须是真实模型名，
+    /// 写占位名会让网关以 "No available upstream candidate" 拒掉。
+    #[test]
+    fn opencode_config_uses_real_model_id_and_sets_default_model() {
+        let dir = temp_dir("opencode");
+        write_opencode(
+            &dir,
+            "http://127.0.0.1:8777",
+            "sk-damaoapi-test",
+            "gemini-3.8-flash-medium",
+        )
+        .unwrap();
+
+        let config: serde_json::Value = read_json_file(&dir.join("opencode.json")).unwrap();
+        let models = &config["provider"]["damaoapi"]["models"];
+        assert!(models.get("gemini-3.8-flash-medium").is_some());
+        assert!(models.get("damaoapi-default").is_none());
+        assert_eq!(config["model"], "damaoapi/gemini-3.8-flash-medium");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn opencode_invalid_structure_is_rejected_without_mutation() {
+        let dir = temp_dir("opencode-invalid-structure");
+        let path = dir.join("opencode.json");
+        let original = b"[]\n";
+        fs::write(&path, original).unwrap();
+        assert!(write_opencode(&dir, "http://gateway", "key", "m").is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// OpenClaw 读 `models.providers.<id>` 与 `agents.defaults.model.primary`，
+    /// 不是平铺的 `{baseUrl, apiKey, model}`。
+    #[test]
+    fn openclaw_config_writes_models_providers_block() {
+        let dir = temp_dir("openclaw");
+        write_openclaw(
+            &dir,
+            "http://127.0.0.1:8777",
+            "sk-damaoapi-test",
+            "gemini-3.8-flash-medium",
+        )
+        .unwrap();
+
+        let config: serde_json::Value = read_json_file(&dir.join("openclaw.json")).unwrap();
+        let provider = &config["models"]["providers"]["damaoapi"];
+        assert_eq!(provider["baseUrl"], "http://127.0.0.1:8777/v1");
+        assert_eq!(provider["api"], "openai-completions");
+        assert_eq!(provider["apiKey"], "sk-damaoapi-test");
+        assert_eq!(provider["models"][0]["id"], "gemini-3.8-flash-medium");
+        assert_eq!(
+            config["agents"]["defaults"]["model"]["primary"],
+            "damaoapi/gemini-3.8-flash-medium"
+        );
+        assert!(config["agents"]["defaults"]["models"]
+            .get("damaoapi/gemini-3.8-flash-medium")
+            .is_some());
+        assert!(config.get("baseUrl").is_none(), "不应再写平铺字段");
+        assert!(
+            config.get("_damaoapi").is_none(),
+            "OpenClaw 对根级未知键严格校验，不能写 _damaoapi 标记"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// OpenClaw 只把 `modelPolicy.allow` 里的模型暴露给 agent。若只写 provider
+    /// 目录而不同步 allow，选中的模型不可见，agent 会退回 allow 里的旧条目
+    /// （历史遗留的模型名），向网关请求一个没有候选的模型并进入 cooldown。
+    #[test]
+    fn openclaw_config_syncs_model_policy_allowlist() {
+        let dir = temp_dir("openclaw-policy");
+        let path = dir.join("openclaw.json");
+        fs::write(
+            &path,
+            br#"{"agents":{"defaults":{"modelPolicy":{"allow":["cliproxy/gpt-5.2","damaoapi/damao","zai/glm-4.7"]},"models":{"cliproxy/gpt-5.2":{},"damaoapi/damao":{},"zai/glm-4.7":{"alias":"GLM"}}}}}"#,
+        )
+        .unwrap();
+
+        write_openclaw(&dir, "http://127.0.0.1:8777", "sk-test", "Copazk").unwrap();
+
+        let config: serde_json::Value = read_json_file(&path).unwrap();
+        let allow = config["agents"]["defaults"]["modelPolicy"]["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+        // 其它 provider 的条目保留，旧 damaoapi 条目换成当前模型。
+        assert!(allow.contains(&"cliproxy/gpt-5.2"), "{allow:?}");
+        assert!(allow.contains(&"zai/glm-4.7"), "{allow:?}");
+        assert!(allow.contains(&"damaoapi/Copazk"), "{allow:?}");
+        assert!(!allow.contains(&"damaoapi/damao"), "{allow:?}");
+
+        // agents.defaults.models 同样只保留当前 damaoapi 模型，其它 provider 不动。
+        let models = config["agents"]["defaults"]["models"].as_object().unwrap();
+        assert!(models.contains_key("damaoapi/Copazk"));
+        assert!(!models.contains_key("damaoapi/damao"));
+        assert_eq!(models["zai/glm-4.7"]["alias"], "GLM");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 没有 `modelPolicy` 时 OpenClaw 视为“不限制”（所有已配置模型可见）。
+    /// 此时不能凭空新建白名单，否则会把用户其它 provider 的模型全部挡掉。
+    #[test]
+    fn openclaw_config_does_not_create_model_policy() {
+        let dir = temp_dir("openclaw-no-policy");
+        write_openclaw(&dir, "http://127.0.0.1:8777", "sk-test", "grok-4.7").unwrap();
+
+        let config: serde_json::Value = read_json_file(&dir.join("openclaw.json")).unwrap();
+        assert!(
+            config["agents"]["defaults"].get("modelPolicy").is_none(),
+            "不应凭空创建 modelPolicy"
+        );
+        // 主模型与 allowlist 照常写入。
+        assert_eq!(
+            config["agents"]["defaults"]["model"]["primary"],
+            "damaoapi/grok-4.7"
+        );
+        assert!(config["agents"]["defaults"]["models"]
+            .get("damaoapi/grok-4.7")
+            .is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// OpenClaw 的严格 schema 会把根级的 `_damaoapi` 当成非法键直接拒绝启动，
+    /// 所以历史版本写入的标记必须在下次应用时清掉；已应用状态改由
+    /// `models.providers.damaoapi` 识别。
+    #[test]
+    fn openclaw_config_drops_legacy_marker_and_detects_provider_block() {
+        let dir = temp_dir("openclaw-legacy");
+        let path = dir.join("openclaw.json");
+        fs::write(&path, br#"{"_damaoapi":true,"agents":{"defaults":{}}}"#).unwrap();
+
+        write_openclaw(
+            &dir,
+            "http://127.0.0.1:8777",
+            "[redacted]",
+            "gemini-3.8-flash-medium",
+        )
+        .unwrap();
+
+        let config: serde_json::Value = read_json_file(&path).unwrap();
+        assert!(config.get("_damaoapi").is_none(), "遗留标记必须被清除");
+        assert!(detect_applied(&path, "openclaw"));
+
+        // 没有 provider 块（即未由 DaMaoAPI 写入）时不得误判为已应用。
+        fs::write(&path, br#"{"agents":{"defaults":{}}}"#).unwrap();
+        assert!(!detect_applied(&path, "openclaw"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn openclaw_invalid_nested_structure_is_rejected_without_mutation() {
+        let dir = temp_dir("openclaw-invalid-structure");
+        let path = dir.join("openclaw.json");
+        let original = br#"{"models":[],"agents":{}}"#;
+        fs::write(&path, original).unwrap();
+        assert!(write_openclaw(&dir, "http://gateway", "key", "m").is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Hermes 的主配置是 `config.yaml`，`custom_providers` 用 `name` 字段；
+    /// 已经存在的 YAML 文本不得被覆盖。
+    #[test]
+    fn hermes_config_merges_yaml_and_backs_up_original() {
+        let dir = temp_dir("hermes");
+        write_hermes(
+            &dir,
+            "http://127.0.0.1:8777",
+            "sk-damaoapi-test",
+            "gemini-3.8-flash-medium",
+        )
+        .unwrap();
+
+        let raw = fs::read_to_string(dir.join("config.yaml")).unwrap();
+        let config: serde_json::Value = serde_yaml::from_str(&raw).unwrap();
+        assert_eq!(config["model"]["provider"], "custom:damaoapi");
+        assert_eq!(config["model"]["default"], "gemini-3.8-flash-medium");
+        assert_eq!(config["model"]["base_url"], "http://127.0.0.1:8777/v1");
+        assert_eq!(config["custom_providers"][0]["name"], "damaoapi");
+        assert!(config["custom_providers"][0].get("id").is_none());
+
+        // 已有 YAML：只改本网关的段，其余配置（含不是本网关写的段）保留，
+        // 且原文件先落一份备份（YAML 重写不保留注释）。
+        let yaml_dir = temp_dir("hermes-merge");
+        let yaml_path = yaml_dir.join("config.yaml");
+        let original = "# 用户注释\nmodel:\n  provider: xai-oauth\n  default: grok-4.6\ntelegram:\n  enabled: true\n";
+        fs::write(&yaml_path, original).unwrap();
+        write_hermes(&yaml_dir, "http://127.0.0.1:8777", "k", "my-model").unwrap();
+        write_hermes(&yaml_dir, "http://127.0.0.1:8777", "k2", "my-model-2").unwrap();
+
+        let merged: serde_json::Value =
+            serde_yaml::from_str(&fs::read_to_string(&yaml_path).unwrap()).unwrap();
+        assert_eq!(merged["model"]["provider"], "custom:damaoapi");
+        assert_eq!(merged["model"]["default"], "my-model-2");
+        assert_eq!(merged["telegram"]["enabled"], true, "用户其它配置必须保留");
+        assert_eq!(
+            fs::read_to_string(yaml_dir.join("config.yaml.damaoapi-backup")).unwrap(),
+            original,
+            "备份必须是写入前的原文件"
+        );
+
+        // 语法坏的 YAML：报错且不碰原文件。
+        let bad_dir = temp_dir("hermes-bad");
+        let bad_path = bad_dir.join("config.yaml");
+        fs::write(&bad_path, "model: [unclosed\n").unwrap();
+        assert!(write_hermes(&bad_dir, "http://127.0.0.1:8777", "k", "m").is_err());
+        assert_eq!(
+            fs::read_to_string(&bad_path).unwrap(),
+            "model: [unclosed\n",
+            "解析失败时不得改写原文件"
+        );
+
+        let bad_shape_dir = temp_dir("hermes-bad-shape");
+        let bad_shape_path = bad_shape_dir.join("config.yaml");
+        let bad_shape = "custom_providers: {}\nmodel: {}\n";
+        fs::write(&bad_shape_path, bad_shape).unwrap();
+        assert!(write_hermes(&bad_shape_dir, "http://gateway", "k", "m").is_err());
+        assert_eq!(fs::read_to_string(&bad_shape_path).unwrap(), bad_shape);
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&yaml_dir);
+        let _ = fs::remove_dir_all(&bad_dir);
+        let _ = fs::remove_dir_all(&bad_shape_dir);
+    }
+
+    /// Hermes 的「已配置」检测必须能解析 YAML 主配置，并且认 `name` 字段。
+    #[test]
+    fn hermes_detection_parses_yaml_config() {
+        let dir = temp_dir("hermes-detect");
+        write_hermes(&dir, "http://127.0.0.1:8777", "k", "m").unwrap();
+        assert!(detect_applied(&dir.join("config.yaml"), "hermes"));
+
+        let other = temp_dir("hermes-other");
+        fs::write(
+            other.join("config.yaml"),
+            "model:\n  provider: xai-oauth\n  default: grok-4.6\n",
+        )
+        .unwrap();
+        assert!(
+            !detect_applied(&other.join("config.yaml"), "hermes"),
+            "不是 DaMaoAPI 写入的 YAML 不应被误认为已配置"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&other);
     }
 }

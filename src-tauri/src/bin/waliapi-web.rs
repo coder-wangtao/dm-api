@@ -5,7 +5,7 @@
 //!   damaoapi-web start [...同上参数...]
 //!   damaoapi-web repair-stream-logs [--data-dir <目录>] [--apply] [--limit <行>]
 //!
-//! 环境变量：DAMAOAPI_SERVER_HOST / DAMAOAPI_SERVER_PORT / DAMAOAPI_DATA_DIR / WT_DATA_HOME
+//! 环境变量：DAMAOAPI_SERVER_HOST / DAMAOAPI_SERVER_PORT / DAMAOAPI_DATA_DIR / XDG_DATA_HOME
 
 use tracing_subscriber::prelude::*;
 use damaoapi_lib::web_server::{resolve_data_dir, run, WebServerConfig};
@@ -24,7 +24,7 @@ fn print_usage() {
 选项:
   --host       监听地址（默认读取 DAMAOAPI_SERVER_HOST 或设置，缺省 127.0.0.1）
   --port       监听端口（默认读取 DAMAOAPI_SERVER_PORT 或设置，缺省 8777）
-  --data-dir   数据目录（默认读取 DAMAOAPI_DATA_DIR / WT_DATA_HOME，再缺省为平台应用数据目录）
+  --data-dir   数据目录（默认读取 DAMAOAPI_DATA_DIR / XDG_DATA_HOME，再缺省为平台应用数据目录）
   -h, --help   显示帮助
 
 子命令 repair-stream-logs:
@@ -36,10 +36,9 @@ fn print_usage() {
     --usage-only    只补 token 用量与响应内容，保留 499 状态。需跑 BPE，大库分钟级
   缺省两者都做。--status-only 与 --usage-only 互斥。
 
-  ⚠ 请先停止正在使用同一数据目录的实例再执行。DaMaoAPI 的 SQLite 以默认
-    journal_mode=delete（回滚日志）打开，写事务提交需要 EXCLUSIVE 锁；本命令
-    会连续发起数百个写事务，与仍在服务的网关（每个请求至少一次读 + 一次写）
-    争锁，两侧都会遇到 SQLITE_BUSY 停顿。首次执行还会触发 schema 迁移，
+  ⚠ 请先停止正在使用同一数据目录的实例再执行。DaMaoAPI 使用 SQLite WAL，
+    读写可以并发，但仍只有一个写事务；本命令会连续发起数百个写事务，
+    与仍在服务的网关争用写锁，仍可能遇到 SQLITE_BUSY。首次执行还会触发 schema 迁移，
     迁移前的 VACUUM INTO 备份需要整库一致性快照，在 GB 级库上尤其不适合与
     在线写入并行。
 "

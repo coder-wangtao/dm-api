@@ -1,7 +1,6 @@
 use serde_json::Value;
 
 /// Convert OpenAI Chat Completions response to Responses API format.
-/// 将 OpenAI Chat Completions API 的响应格式，转换成 OpenAI Responses API 的响应格式。
 pub fn openai_to_responses(openai_resp: &Value, model: &str) -> Value {
     let choice = openai_resp
         .get("choices")

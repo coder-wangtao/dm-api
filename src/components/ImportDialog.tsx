@@ -43,6 +43,7 @@ export function ImportDialog({
     new Set(),
   );
 
+  // ─── Damaocode import ───────────────────────────────────────
   const handleDamaocodeImport = async () => {
     setLoading(true);
     setError(null);
@@ -63,6 +64,7 @@ export function ImportDialog({
     setLoading(false);
   };
 
+  // ─── Damaoapi import ────────────────────────────────────────
   const handleDamaoapiImport = async () => {
     setLoading(true);
     setError(null);
@@ -202,8 +204,8 @@ export function ImportDialog({
 
               <ImportOption
                 icon={<Upload size={20} />}
-                title="导入 DamaoAPI 导出文件"
-                description="从其他 DamaoAPI 实例导出的 JSON 文件导入渠道"
+                title="导入 DaMaoAPI 导出文件"
+                description="从其他 DaMaoAPI 实例导出的 JSON 文件导入渠道"
                 onClick={() => {
                   setMode("damaoapi");
                   setResult(null);

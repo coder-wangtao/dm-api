@@ -28,6 +28,8 @@
 
 pub mod driver;
 pub mod estimate_usage;
+pub mod grok_arguments;
+pub mod prompt_classify;
 pub mod sse;
 
 #[cfg(test)]
@@ -37,7 +39,7 @@ mod mock_tests;
 
 use crate::channel_presets::AuthScheme;
 use crate::core::attempt::{
-    AttemptFailure, AttemptResult, AttemptSuccess, FailureClass,
+    classify_http_status, AttemptFailure, AttemptResult, AttemptSuccess, FailureClass,
     PreparedAttempt, TokenUsage,
 };
 use crate::core::channel_identity::ChannelIdentity;
@@ -190,17 +192,46 @@ pub async fn dispatch_auth_account_executor(
         }
         let response_headers = safe_response_headers(response.headers());
         let bytes = response.bytes().await.unwrap_or_default();
-        let body: Value = match serde_json::from_slice(&bytes) {
-            Ok(body) => body,
-            Err(error) => {
+        // Qoder 网关对任何请求（含 stream:false）都返回 SSE；先把信封流
+        // 聚合成完整的 chat.completion，再走与非流式一致的解码路径。
+        let body: Value = if is_qoder_auth(attempt) {
+            let mut aggregator = crate::protocol::codec::qoder::QoderChatAggregator::new();
+            if let Err(message) = aggregator.push(&bytes) {
                 return AttemptResult::Failure(AttemptFailure {
                     failure_class: FailureClass::UpstreamProtocolError,
-                    message: format!("Auth account non-stream body failed JSON decode: {error}"),
+                    message: format!("Qoder SSE aggregation failed: {message}"),
                     status_code: Some(502),
                     retry_after: None,
-                })
+                });
+            }
+            match aggregator.finish() {
+                Ok(body) => body,
+                Err(message) => {
+                    return AttemptResult::Failure(AttemptFailure {
+                        failure_class: FailureClass::UpstreamProtocolError,
+                        message: format!("Qoder SSE aggregation failed: {message}"),
+                        status_code: Some(502),
+                        retry_after: None,
+                    })
+                }
+            }
+        } else {
+            match serde_json::from_slice(&bytes) {
+                Ok(body) => body,
+                Err(error) => {
+                    return AttemptResult::Failure(AttemptFailure {
+                        failure_class: FailureClass::UpstreamProtocolError,
+                        message: format!(
+                            "Auth account non-stream body failed JSON decode: {error}"
+                        ),
+                        status_code: Some(502),
+                        retry_after: None,
+                    })
+                }
             }
         };
+        let mut body = body;
+        normalize_grok_tool_arguments(attempt, &mut body);
         if let Some(failure) = semantic_failure(&attempt.upstream_protocol, &body) {
             return AttemptResult::Failure(failure);
         }
@@ -248,10 +279,11 @@ pub async fn dispatch_auth_account_executor(
     if let Err(error) = accumulator.push(&bytes) {
         return AttemptResult::Failure(responses_protocol_failure(error.message));
     }
-    let body = match accumulator.finish() {
+    let mut body = match accumulator.finish() {
         Ok(body) => body,
         Err(error) => return AttemptResult::Failure(responses_protocol_failure(error.message)),
     };
+    normalize_grok_tool_arguments(attempt, &mut body);
     if let Some(failure) = semantic_failure(&attempt.upstream_protocol, &body) {
         return AttemptResult::Failure(failure);
     }
@@ -322,14 +354,29 @@ pub async fn dispatch_auth_account_stream_executor(
         .unwrap_or("text/event-stream")
         .to_owned();
     let headers = safe_response_headers(response.headers());
+    let body = response
+        .bytes_stream()
+        .map(|result| result.map_err(std::io::Error::other))
+        .boxed();
+    // Grok 会把整数参数写成浮点（`4000.0`），Codex 按 schema 反序列化整数会直接
+    // 失败；在上游字节流层规范化，下游无论什么协议都受益。
+    let body = if grok_arguments::needs_normalization(attempt.auth_provider.as_deref()) {
+        grok_arguments::rewrite_stream(body)
+    } else {
+        body
+    };
     StreamAttemptResult::Connected(UpstreamStream {
         content_type,
         headers,
-        body: response
-            .bytes_stream()
-            .map(|result| result.map_err(std::io::Error::other))
-            .boxed(),
+        body,
     })
+}
+
+/// Grok 专用：把响应里工具参数的整数值浮点规范成整数。其它 provider 不动。
+fn normalize_grok_tool_arguments(attempt: &PreparedAttempt, body: &mut Value) {
+    if grok_arguments::needs_normalization(attempt.auth_provider.as_deref()) {
+        grok_arguments::rewrite_response_body(body);
+    }
 }
 
 fn force_responses_stream(body: &Value) -> Value {
@@ -348,6 +395,12 @@ fn is_gemini_auth(attempt: &PreparedAttempt) -> bool {
     attempt.upstream_protocol == "gemini"
 }
 
+/// Qoder 网关对任何请求（含 `stream:false`）都返回 SSE `text/event-stream`。
+/// 非流式路径必须强制 `stream:true` 发送，把上游 SSE 聚合成完成体再解码。
+fn is_qoder_auth(attempt: &PreparedAttempt) -> bool {
+    attempt.upstream_protocol == "qoder"
+}
+
 fn non_stream_json_body(body: &Value, attempt: &PreparedAttempt) -> Value {
     let mut body = body.clone();
     if is_gemini_auth(attempt) {
@@ -358,7 +411,11 @@ fn non_stream_json_body(body: &Value, attempt: &PreparedAttempt) -> Value {
         return body;
     }
     if let Some(object) = body.as_object_mut() {
-        object.insert("stream".to_owned(), Value::Bool(false));
+        // Qoder 的网关没有 JSON 非流式形态：保持 codec 写入的 stream:true，
+        // 响应侧由 [`dispatch_auth_account_executor` 的 qoder 分支]聚合 SSE。
+        if !is_qoder_auth(attempt) {
+            object.insert("stream".to_owned(), Value::Bool(false));
+        }
         object.remove("stream_options");
     }
     ensure_messages_betas(&mut body, attempt);
@@ -438,11 +495,17 @@ fn header_map(headers: &[(String, String)]) -> reqwest::header::HeaderMap {
 /// of the channel-style 502 mask: the caller needs to know re-login fixes it.
 fn provider_failure(error: crate::auth_provider::ProviderError) -> AttemptFailure {
     let failure_class = error.failure_class();
+    let budget_payment =
+        crate::services::knowledge::budget::current().is_some() && error.is_payment_required();
     AttemptFailure {
-        status_code: Some(match failure_class {
-            FailureClass::CallerTerminal => 400,
-            FailureClass::ChannelAuthTerminal => 401,
-            _ => 502,
+        status_code: Some(if budget_payment {
+            402
+        } else {
+            match failure_class {
+                FailureClass::CallerTerminal => 400,
+                FailureClass::ChannelAuthTerminal => 401,
+                _ => 502,
+            }
         }),
         failure_class,
         message: error.to_string(),
@@ -613,6 +676,14 @@ pub fn semantic_failure(protocol: &str, body: &Value) -> Option<AttemptFailure> 
     if !(responses_failed || anthropic_error || openai_error) {
         return None;
     }
+    if crate::services::knowledge::budget::current().is_some() && structured_quota_error(body) {
+        return Some(AttemptFailure {
+            failure_class: FailureClass::CallerTerminal,
+            message: "upstream quota rejected".to_string(),
+            status_code: Some(429),
+            retry_after: None,
+        });
+    }
     let error = body.get("error").filter(|v| !v.is_null()).unwrap_or(body);
     let kind = error
         .get("type")
@@ -689,15 +760,13 @@ fn gemini_prompt_feedback_failure(body: &Value) -> Option<AttemptFailure> {
     })
 }
 
-/// Backwards-compatible Anthropic helper retained for tests.
-/// New code should use [`semantic_failure`].
-#[cfg(test)]
+/// Backwards-compatible Anthropic helper retained for the existing callers and
+/// tests. New code should use [`semantic_failure`].
 pub fn anthropic_error_envelope_message(body: &Value) -> Option<String> {
     semantic_failure("anthropic", body).map(|failure| failure.message)
 }
 
 /// Parse a bounded response body and detect an Anthropic error envelope.
-#[cfg(test)]
 pub fn anthropic_error_envelope_from_bytes(bytes: &[u8]) -> Option<String> {
     serde_json::from_slice::<Value>(bytes)
         .ok()
@@ -749,7 +818,6 @@ pub fn semantic_stream_failure(protocol: &str, record: &[u8]) -> Option<AttemptF
 }
 
 /// Inspect one complete Anthropic SSE record for an error event/envelope.
-#[cfg(test)]
 pub fn anthropic_stream_error_message(record: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(record).ok()?;
     let event_error = text.lines().any(|line| line.trim() == "event: error");
@@ -776,7 +844,16 @@ pub fn failure_from_upstream(
     body: &str,
     retry_after_secs: Option<u64>,
 ) -> AttemptFailure {
-    let class = classify_upstream_status(status, body).unwrap_or(FailureClass::Retryable);
+    let mut class = classify_upstream_status(status, body).unwrap_or(FailureClass::Retryable);
+    // 仅预算请求收紧明确的额度拒绝；不能通过换 Key 或关键词降级绕过。
+    // 只识别结构化机器码，不按上游自由消息文本猜测额度。
+    if crate::services::knowledge::budget::current().is_some() && status == 429 {
+        if let Ok(value) = serde_json::from_str::<Value>(body) {
+            if structured_quota_error(&value) {
+                class = FailureClass::CallerTerminal;
+            }
+        }
+    }
     let message = error_message_from_body(body).unwrap_or_else(|| {
         let cls = class.as_str();
         format!("upstream HTTP {status} ({cls})")
@@ -794,6 +871,17 @@ pub fn failure_from_upstream(
         status_code,
         retry_after: retry_after_secs,
     }
+}
+
+fn structured_quota_error(value: &Value) -> bool {
+    ["/error/code", "/error/type", "/code", "/type"]
+        .iter()
+        .any(|pointer| {
+            matches!(
+                value.pointer(pointer).and_then(Value::as_str),
+                Some("insufficient_quota" | "quota_exceeded" | "billing_hard_limit_reached")
+            )
+        })
 }
 
 /// Auth Account variant of [`failure_from_upstream`]: the account belongs to
@@ -824,10 +912,26 @@ fn error_message_from_body(body: &str) -> Option<String> {
 }
 
 fn transport_failure(e: reqwest::Error) -> AttemptFailure {
+    if crate::services::knowledge::budget::current().is_some() {
+        return AttemptFailure {
+            failure_class: FailureClass::Retryable,
+            message: if e.is_timeout() {
+                "upstream transport timed out"
+            } else {
+                "upstream transport failed"
+            }
+            .to_string(),
+            // 没有收到 HTTP 响应；与真实上游状态区分，防止上游正文伪造本地失败。
+            status_code: None,
+            retry_after: None,
+        };
+    }
     AttemptFailure {
         failure_class: FailureClass::Retryable,
         message: format!("upstream connection failed: {e}"),
-        status_code: Some(502),
+        // 保留 reqwest 的类型化超时原因；AttemptFlow 对 Retryable 的最终 HTTP
+        // 仍统一返回 502，504 只用于网关内部诊断，不改变重试/跨渠道规则。
+        status_code: Some(if e.is_timeout() { 504 } else { 502 }),
         retry_after: None,
     }
 }
@@ -1020,11 +1124,14 @@ async fn send_request(
 ) -> Result<reqwest::Response, AttemptFailure> {
     let is_gemini = identity.legacy_executor_override.as_deref() == Some("gemini_native");
     let stream = is_stream_body(&attempt.encoded_body);
-    // 渠道级出站代理：从渠道 config JSON 的 proxy 键解析（global/direct/custom）。
+    // 渠道级出站代理：从渠道 config JSON 的 proxy 键解析
+    //（global/direct/custom）。未填写 proxy 时跟随全局设置；显式
+    // direct 仍保持直连。
     let proxy_url = crate::adaptor::ProxySetting::from_extra(
         &serde_json::from_str::<serde_json::Value>(&channel.config).unwrap_or_default(),
     )
-    .and_then(|p| p.resolve());
+    .map(|p| p.resolve())
+    .unwrap_or_else(crate::adaptor::global_proxy_url);
     let c = client(channel.timeout_secs, stream, proxy_url.as_deref());
 
     if is_gemini {
@@ -1136,7 +1243,14 @@ pub async fn dispatch_executor(
         .map(|s| s.to_string());
     // Read the raw bytes once; parse JSON ourselves so the bytes stay available
     // for diagnostics when the decode fails.
-    let bytes = resp.bytes().await.unwrap_or_default();
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        // 总超时也可能发生在收到响应头后，不能吞掉后误判为 JSON 格式错误。
+        Err(error) if error.is_timeout() => {
+            return AttemptResult::Failure(transport_failure(error));
+        }
+        Err(_) => bytes::Bytes::new(),
+    };
     let body: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -1144,20 +1258,25 @@ pub async fn dispatch_executor(
             // text) or an undecoded compressed body (gzip etc.) — the distinction
             // only shows up in the bytes and headers, so log them before failing.
             let preview = String::from_utf8_lossy(&bytes[..bytes.len().min(200)]).to_string();
-            tracing::warn!(
-                url = %final_url(
-                    &attempt.native_base_url,
-                    &endpoint_path(&attempt.upstream_protocol, &attempt.upstream_endpoint),
-                    query
-                ),
-                status = status,
-                content_encoding = ?content_encoding,
-                content_type = ?content_type,
-                body_len = bytes.len(),
-                body_preview = %preview,
-                err = %e,
-                "2xx upstream body failed JSON decode"
-            );
+            if crate::services::knowledge::budget::current().is_some() {
+                tracing::warn!(status, content_encoding = ?content_encoding, content_type = ?content_type,
+                    body_len = bytes.len(), "RAG 上游响应不是有效 JSON");
+            } else {
+                tracing::warn!(
+                    url = %final_url(
+                        &attempt.native_base_url,
+                        &endpoint_path(&attempt.upstream_protocol, &attempt.upstream_endpoint),
+                        query
+                    ),
+                    status = status,
+                    content_encoding = ?content_encoding,
+                    content_type = ?content_type,
+                    body_len = bytes.len(),
+                    body_preview = %preview,
+                    err = %e,
+                    "2xx upstream body failed JSON decode"
+                );
+            }
             // Draft-test probes only: a gateway that ignores `stream:false` and
             // ALWAYS returns SSE is still speaking the endpoint's protocol, so a
             // probe must not fail it just because the body is SSE-framed rather

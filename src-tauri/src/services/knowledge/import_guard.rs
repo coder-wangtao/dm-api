@@ -374,7 +374,7 @@ terminal prompts disabled\nremote: Repository not found.";
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("waliapi-import-guard-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("damaoapi-import-guard-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

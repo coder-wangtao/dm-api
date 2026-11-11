@@ -35,7 +35,7 @@ const DEFAULT_EF_SEARCH: usize = 50;
 fn index_path(kb_id: &str) -> PathBuf {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("./data"))
-        .join("waliapi")
+        .join("damaoapi")
         .join("hnsw_indexes");
     let _ = std::fs::create_dir_all(&dir);
     dir.join(format!("kb_{}.hnsw", kb_id))
@@ -1760,7 +1760,7 @@ mod rrf_tests {
     #[test]
     fn fusion_mode_settings_expression_matches_rag_query() {
         let dir =
-            std::env::temp_dir().join(format!("waliapi-fusion-mode-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("damaoapi-fusion-mode-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let store = crate::settings_store::SettingsStore::file(dir.join("settings.json"));
 

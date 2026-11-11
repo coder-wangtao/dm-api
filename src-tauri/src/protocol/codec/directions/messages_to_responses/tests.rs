@@ -4,9 +4,95 @@ use crate::protocol::codec::ports::StreamDecoder;
 use crate::protocol::codec::report::ConversionContext;
 
 #[test]
+fn request_drops_safeguards_fail_open() {
+    // Claude Code 2.1.280 的顶层 `safeguards`（分类器上下文声明）在 Responses 里
+    // 没有对应物；整段拒绝会让会话无法继续，因此按 fail-open 丢弃并记录。
+    let (out, context) = encode_request(
+        &serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "safeguards": [{"type": "classifier", "classifier_context": "ctx"}]
+        }),
+        "m",
+    )
+    .unwrap();
+    assert!(out.get("safeguards").is_none());
+    assert!(context
+        .normalized
+        .iter()
+        .any(|pointer| pointer.contains("safeguards")));
+}
+
+#[test]
+fn request_rejects_non_string_stop_sequence_elements() {
+    for value in [serde_json::json!(["END", 1]), serde_json::json!([null])] {
+        let error = encode_request(
+            &serde_json::json!({
+                "messages": [{"role": "user", "content": "hi"}],
+                "stop_sequences": value
+            }),
+            "m",
+        )
+        .unwrap_err();
+        assert!(error
+            .json_pointers
+            .iter()
+            .any(|pointer| pointer.starts_with("/stop_sequences")));
+    }
+}
+
+#[test]
 fn request_preserves_tool_result_id() {
     let(out,_)=encode_request(&serde_json::json!({"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"ok"}]}]}),"m").unwrap();
     assert_eq!(out["input"][0]["call_id"], "call_1");
+}
+
+#[test]
+fn request_skips_builtin_tools_fail_open() {
+    let (out, context) = encode_request(
+        &serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [
+                {"type": "web_search_20250305", "name": "web_search", "max_uses": 8},
+                {
+                    "name": "lookup",
+                    "description": "lookup",
+                    "input_schema": {"type": "object"}
+                }
+            ],
+            "tool_choice": {"type": "auto"}
+        }),
+        "m",
+    )
+    .unwrap();
+    assert_eq!(
+        out["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["lookup"]
+    );
+    assert_eq!(out["tool_choice"], "auto");
+    assert!(context.normalized.iter().any(|pointer| pointer == "/tools"));
+}
+
+#[test]
+fn request_rejects_forced_builtin_tool() {
+    let error = encode_request(
+        &serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "tool", "name": "web_search"}
+        }),
+        "m",
+    )
+    .unwrap_err();
+    assert!(error
+        .json_pointers
+        .iter()
+        .any(|pointer| pointer == "/tool_choice/name"));
 }
 
 #[test]

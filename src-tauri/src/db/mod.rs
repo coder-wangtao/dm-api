@@ -2,8 +2,11 @@ pub mod models;
 pub mod repository;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+#[cfg(test)]
+use sqlx::sqlite::SqliteJournalMode;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use tauri::{AppHandle, Manager};
 
 /// 迁移前备份文件名前缀。备份形如 `damaoapi.db.pre-upgrade-20260806-190400`，与数据库同目录。
@@ -11,6 +14,81 @@ const BACKUP_PREFIX: &str = "damaoapi.db.pre-upgrade-";
 
 /// 保留的最近备份份数（超出后删除最旧的）。
 const BACKUP_KEEP: usize = 3;
+
+/// 与 SQLx 原默认值一致；用于短写锁竞争，不替代请求预算或单实例部署。
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// WAL 启用要求 SQLite 至少 3.51.3：低于该版本存在 WAL-reset 缺陷
+/// （见 sqlite-compat/README.md），宁可保持 DELETE 模式也不启用。
+const WAL_MIN_SQLITE_VERSION: i64 = 3_051_003;
+
+/// WAL 启用失败时的重试次数与间隔：文件可能被杀毒/同步工具或
+/// 升级期间未完全退出的旧实例短暂持有，稍候重试通常即可成功。
+const WAL_ENABLE_ATTEMPTS: u32 = 3;
+const WAL_ENABLE_RETRY_INTERVAL: Duration = Duration::from_millis(300);
+
+/// 所有池连接使用同一基础配置。
+///
+/// journal 模式不在此处设置：DELETE→WAL 转换需要独占访问，若在建连
+/// 选项里强制执行，文件被占用（升级时旧实例未退出、杀毒/同步工具持锁、
+/// AppData 被重定向到网络盘等，Windows 上高发）会让连接直接失败，
+/// 叠加启动路径的 `expect` 变成「启动即 panic → 白屏」。
+/// WAL 启用改为 `enable_wal_best_effort` 启动期一次性尽力而为。
+pub(crate) fn sqlite_connect_options(db_path: &Path) -> SqliteConnectOptions {
+    SqliteConnectOptions::new()
+        .filename(db_path)
+        .create_if_missing(true)
+        .busy_timeout(SQLITE_BUSY_TIMEOUT)
+}
+
+/// 启动期把数据库切换到 WAL 模式（持久属性，一次成功对全部连接生效）。
+///
+/// best-effort，绝不阻断启动：
+/// - SQLite 低于 3.51.3（构建环境意外链接旧系统库）时跳过，避免在
+///   受 WAL-reset 缺陷影响的版本上启用 WAL；
+/// - 文件被占用导致转换失败时重试数次，仍失败则沿用原 journal 模式
+///   继续启动（等价 v0.4.0 之前的行为）。
+///
+/// 返回是否已处于 WAL 模式。
+pub(crate) async fn enable_wal_best_effort(pool: &SqlitePool) -> bool {
+    // bundled 依赖固定了修复版本；此检查防止构建环境意外链接旧系统库。
+    let version = unsafe { libsqlite3_sys::sqlite3_libversion_number() } as i64;
+    if version < WAL_MIN_SQLITE_VERSION {
+        log::warn!("SQLite {version} 低于 3.51.3，跳过 WAL 启用，沿用原 journal 模式继续启动");
+        return false;
+    }
+    for attempt in 1..=WAL_ENABLE_ATTEMPTS {
+        // PRAGMA journal_mode=WAL 成功时返回生效后的模式字符串；转换被
+        // 占用拒绝时以错误（SQLITE_BUSY）或原模式字符串两种形式出现，
+        // 两种都按「未启用」处理而不是失败退出。
+        match sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
+            .fetch_one(pool)
+            .await
+        {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => return true,
+            Ok(mode) => {
+                log::warn!("journal_mode=WAL 未生效（当前为 {mode}），沿用原模式继续启动");
+                return false;
+            }
+            Err(error) if attempt < WAL_ENABLE_ATTEMPTS => {
+                log::warn!("启用 WAL 失败，稍后重试: {error}");
+                tokio::time::sleep(WAL_ENABLE_RETRY_INTERVAL).await;
+            }
+            Err(error) => {
+                log::warn!("启用 WAL 失败，沿用原 journal 模式继续启动: {error}");
+                return false;
+            }
+        }
+    }
+    false
+}
+
+/// 不等待活跃读事务结束，也不强制截断 WAL；未回写的帧保留供后续检查点处理。
+async fn checkpoint_wal(pool: &SqlitePool) -> Result<(i64, i64, i64), sqlx::Error> {
+    sqlx::query_as("PRAGMA wal_checkpoint(PASSIVE)")
+        .fetch_one(pool)
+        .await
+}
 
 pub struct Database {
     pub pool: SqlitePool,
@@ -21,6 +99,10 @@ pub struct Database {
 /// v0.1.1 → v0.1.3 迁移文件变更：
 /// - 005_add_response_choices.sql → 005_add_response_choices_and_seq.sql（内容变更）
 /// - 007 文件可能被本地修改过（description 不匹配）
+/// - 051/052：0.4.2 迁移重排后在文件头部追加了兼容说明注释（commit 5977100），
+///   导致在注释追加前已应用这两个迁移的升级库 checksum 不匹配 → VersionMismatch(51)
+///   启动 panic 闪退。内容差异仅为注释，schema 效果由 ensure_wiki_schema_columns
+///   幂等兜底，因此直接对齐 checksum 安全。
 ///
 /// 此函数在 sqlx::migrate 之前运行，将旧 checksum 更新为当前文件的 checksum。
 /// 仅更新已有记录，不会跳过任何迁移。
@@ -34,8 +116,19 @@ async fn fix_legacy_migration_checksums(pool: &SqlitePool) {
     let migration_007 = include_str!("../../migrations/007_fix_log_seq.sql");
     let checksum_007: Vec<u8> = sha2::Sha384::digest(migration_007.as_bytes()).to_vec();
 
-    // 更新 version=5 和 version=7 的 checksum（BLOB 类型），使其匹配当前文件
-    for (version, new_checksum) in [(5i64, checksum_005), (7i64, checksum_007)] {
+    let migration_051 = include_str!("../../migrations/051_wiki_pdf_ocr.sql");
+    let checksum_051: Vec<u8> = sha2::Sha384::digest(migration_051.as_bytes()).to_vec();
+
+    let migration_052 = include_str!("../../migrations/052_wiki_kb_reasoning_temperature.sql");
+    let checksum_052: Vec<u8> = sha2::Sha384::digest(migration_052.as_bytes()).to_vec();
+
+    // 更新对应 version 的 checksum（BLOB 类型），使其匹配当前文件
+    for (version, new_checksum) in [
+        (5i64, checksum_005),
+        (7i64, checksum_007),
+        (51i64, checksum_051),
+        (52i64, checksum_052),
+    ] {
         let result = sqlx::query(
             "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND checksum != ?",
         )
@@ -53,6 +146,64 @@ async fn fix_legacy_migration_checksums(pool: &SqlitePool) {
     }
 }
 
+/// 兼容旧 Windows 安装包内嵌的 CRLF 迁移，保留未知 SQL 内容差异的校验。
+/// 必须在迁移前备份之后执行，避免把新版校验值写入供旧版恢复的快照。
+async fn fix_migration_line_ending_checksums(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+    use sha2::Digest;
+
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if exists == 0 {
+        return Ok(0);
+    }
+
+    let mut tx = pool.begin().await?;
+    let applied: Vec<(i64, Vec<u8>)> =
+        sqlx::query_as("SELECT version, checksum FROM _sqlx_migrations WHERE success = 1")
+            .fetch_all(&mut *tx)
+            .await?;
+    let migrator = sqlx::migrate!("./migrations");
+    let mut repaired = 0;
+    for (version, stored_checksum) in applied {
+        let Some(migration) = migrator
+            .iter()
+            .find(|migration| migration.version == version)
+        else {
+            continue;
+        };
+        if migration.checksum.as_ref() == stored_checksum.as_slice() {
+            continue;
+        }
+
+        // 只接受当前 SQL 的两种行尾变体；不能直接覆盖任意历史 checksum。
+        let lf = migration.sql.replace("\r\n", "\n");
+        let crlf = lf.replace('\n', "\r\n");
+        let lf_checksum = sha2::Sha384::digest(lf.as_bytes()).to_vec();
+        let crlf_checksum = sha2::Sha384::digest(crlf.as_bytes()).to_vec();
+        if stored_checksum != lf_checksum && stored_checksum != crlf_checksum {
+            continue;
+        }
+
+        repaired += sqlx::query(
+            "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND checksum = ? AND success = 1",
+        )
+        .bind(migration.checksum.as_ref())
+        .bind(version)
+        .bind(&stored_checksum)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    }
+    tx.commit().await?;
+    if repaired > 0 {
+        log::warn!("已兼容 {repaired} 条历史迁移的 LF/CRLF 校验值差异");
+    }
+    Ok(repaired)
+}
+
 /// 迁移集内的最大版本号（当前编译进二进制的迁移文件）。
 fn migration_max_version() -> i64 {
     sqlx::migrate!("./migrations")
@@ -60,6 +211,127 @@ fn migration_max_version() -> i64 {
         .map(|m| m.version)
         .max()
         .unwrap_or(0)
+}
+
+/// 幂等补齐 0.4.2 重排后的 Wiki/RAG 配置列。
+/// 防御性兜底：正常情况下列由迁移（051/052）或 backfill 兼容路径保证存在；
+/// 这里 PRAGMA 按存在性补齐，类型与代码读取一致（TEXT / REAL）。
+pub async fn ensure_wiki_schema_columns(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    use sqlx::Row;
+    let col_defs: &[(&str, &str, &str)] = &[
+        ("wiki_projects", "pdf_ocr_channel_id", "TEXT"),
+        ("wiki_projects", "pdf_ocr_model", "TEXT"),
+        ("wiki_projects", "reasoning_effort", "TEXT"),
+        ("wiki_projects", "temperature", "REAL"),
+        ("kb_knowledge_bases", "reasoning_effort", "TEXT"),
+        ("kb_knowledge_bases", "temperature", "REAL"),
+    ];
+    for (table, column, col_type) in col_defs {
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| format!("读取 {table} 列定义失败: {e}"))?;
+        let exists = rows.iter().any(|r| {
+            r.try_get::<String, _>("name")
+                .map(|n| n == *column)
+                .unwrap_or(false)
+        });
+        if !exists {
+            sqlx::query(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {col_type}"
+            ))
+            .execute(pool)
+            .await
+            .map_err(|e| format!("补齐 {table}.{column} 失败: {e}"))?;
+            log::info!("已补齐列 {table}.{column} ({col_type})");
+        }
+    }
+    Ok(())
+}
+
+/// 0.4.2 升级兼容：旧编号 047/048/049（早期 Wiki 迁移：api_key_wiki_access /
+/// wiki_pdf_ocr / wiki_kb_reasoning_temperature）在合并上游主线后被重排为 050/051/052。
+///
+/// 升级库的 `_sqlx_migrations` 里 version 47/48/49 是**旧迁移**（description 为
+/// "api key wiki access" 等），而 0.4.2 迁移集里 version 47/48 是**上游的**
+/// request_log_client_name / observability。sqlx 对已应用 version 会比对 checksum，
+/// 内容不同即报 VersionMismatch → 迁移失败 → 启动 panic 闪退（用户实测，上游 0.4.2 亦然）。
+///
+/// 因此这里把旧记录**重编号**为新版本（47→50 / 48→51 / 49→52，含新迁移的
+/// description 与 checksum），使 sqlx 视 50/51/52 为已应用、47/48 为未应用
+/// （旧库确实未执行过上游的 request_log 迁移），从而正确补跑 47/48 并跳过 50/51/52。
+///
+/// 仅在旧记录 description 精确匹配我的迁移时才重编号；旧库本就是上游主线版
+/// （47="request log client name"）时不受影响。全新库无迁移记录表，直接跳过。
+async fn backfill_reranked_migrations(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    let migrator = sqlx::migrate!("./migrations");
+    let table_exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("检查迁移记录表失败: {e}"))?;
+    if table_exists == 0 {
+        return Ok(());
+    }
+
+    // (旧编号, 新编号, 旧记录的 description)
+    let reranked: &[(i64, i64, &str)] = &[
+        (47, 50, "api key wiki access"),
+        (48, 51, "wiki pdf ocr"),
+        (49, 52, "wiki kb reasoning temperature"),
+    ];
+
+    for (old_version, new_version, expect_desc) in reranked {
+        let old_row: Option<(String,)> = sqlx::query_as(
+            "SELECT description FROM _sqlx_migrations WHERE version = ? AND success = 1",
+        )
+        .bind(old_version)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("读取迁移记录失败: {e}"))?;
+        let Some((desc,)) = old_row else {
+            continue; // 旧编号不存在（全新库或上游模板库）→ 无需处理
+        };
+        if desc != *expect_desc {
+            continue; // 同编号但不是我的旧迁移（如上游 request_log 迁移）→ 不动
+        }
+
+        let new_exists: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM _sqlx_migrations WHERE version = ? AND success = 1")
+                .bind(new_version)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| format!("读取迁移记录失败: {e}"))?;
+        if new_exists.is_some() {
+            // 新编号已存在 → 删除旧的重复记录（内容等价）
+            sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?")
+                .bind(old_version)
+                .execute(pool)
+                .await
+                .map_err(|e| format!("清理旧迁移记录失败（{old_version}）: {e}"))?;
+            log::info!("已删除旧迁移记录 {old_version}（新编号 {new_version} 已存在）");
+            continue;
+        }
+
+        let Some(migration) = migrator.iter().find(|m| m.version == *new_version) else {
+            continue;
+        };
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET version = ?, description = ?, checksum = ? WHERE version = ?",
+        )
+        .bind(new_version)
+        .bind(migration.description.to_string())
+        .bind(migration.checksum.as_ref())
+        .bind(old_version)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("重编号迁移记录失败（{old_version}→{new_version}）: {e}"))?;
+        log::info!(
+            "已把旧迁移记录 {old_version} 重编号为新版本 {new_version}（防 VersionMismatch 闪退）"
+        );
+    }
+    Ok(())
 }
 
 /// 数据库当前迁移版本：`_sqlx_migrations` 中最大的已成功版本。
@@ -111,9 +383,10 @@ fn prune_old_backups(db_path: &Path) -> Result<(), String> {
 
 /// 迁移前自动备份。仅当数据库已存在（有迁移记录）且 schema 版本低于当前迁移集时执行。
 ///
-/// 备份用 SQLite `VACUUM INTO` 生成一致快照（原子、对 live DB 安全），命名
+/// 备份用 SQLite `VACUUM INTO` 生成一致事务快照（包含 WAL 内已提交数据），命名
 /// `damaoapi.db.pre-upgrade-<YYYYmmdd-HHMMSS>`，随后按 `BACKUP_KEEP` 清理旧备份。
-/// 恢复为纯文件级：手动把备份文件复制回 `damaoapi.db` 即可。
+/// 恢复完整快照前必须停止全部实例并关闭连接，再隔离原库及其 -wal/-shm。
+/// 中断的 VACUUM INTO 可能留下不完整目标文件，不应作为成功备份使用。
 ///
 /// 无需备份时返回 `Ok(None)`。备份失败只记录错误，不阻断启动。
 async fn backup_before_migration(
@@ -128,7 +401,7 @@ async fn backup_before_migration(
     }
 
     let backup_path = make_backup_path(db_path);
-    // VACUUM INTO 目标已存在时行为未定义，先清除旧目标（同名同秒重复时防御）
+    // VACUUM INTO 拒绝非空目标，先清除旧目标（同名同秒重复时防御）
     if backup_path.exists() {
         std::fs::remove_file(&backup_path)
             .map_err(|e| format!("移除旧备份 {} 失败: {e}", backup_path.display()))?;
@@ -150,7 +423,6 @@ async fn backup_before_migration(
 }
 
 impl Database {
-    //&：引用，表示借用这个对象，而不是直接拿走它的所有权。
     pub async fn new(app: &AppHandle) -> Self {
         let app_data_dir = app
             .path()
@@ -164,22 +436,40 @@ impl Database {
         std::fs::create_dir_all(app_data_dir).expect("failed to create app data dir");
 
         let db_path = app_data_dir.join("damaoapi.db");
-        let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(&db_url)
+            .connect_with(sqlite_connect_options(&db_path))
             .await
             .expect("failed to connect to database");
+
+        // 启动期一次性启用 WAL（best-effort）：文件被占用时降级为原
+        // journal 模式继续启动，不因 journal 模式转换失败而 panic。
+        let wal_enabled = enable_wal_best_effort(&pool).await;
+        if !wal_enabled {
+            log::warn!("数据库未处于 WAL 模式，沿用原 journal 模式继续启动");
+        }
 
         // 修复旧版迁移 checksum（v0.1.1 → v0.1.3 兼容）
         fix_legacy_migration_checksums(&pool).await;
 
         // 迁移前自动备份：schema 落后时先做文件级快照，再跑迁移。
-        // 失败不阻断启动——迁移本身是增量、可逆的，备份是额外保险。
+        // 失败继续启动沿用既有 best-effort 策略；不保证迁移普遍可逆。
         if let Err(e) = backup_before_migration(&pool, &db_path).await {
             log::error!("迁移前自动备份失败，继续启动: {e}");
         }
+
+        fix_migration_line_ending_checksums(&pool)
+            .await
+            .expect("failed to reconcile migration line endings");
+
+        // 0.4.2 升级兼容：旧编号 047/048/049（早期 Wiki 迁移）重排为 050/051/052。
+        // 旧库 _sqlx_migrations 记录的是旧版本；直接跑迁移时 051/052 的 ALTER ADD COLUMN
+        // 会因列已存在报 duplicate column → 启动 panic 闪退。先把旧记录映射注册为新编号
+        // （视为已应用），sqlx 跳过；新库无旧记录，正常执行建列。
+        backfill_reranked_migrations(&pool)
+            .await
+            .expect("failed to backfill reranked migration records");
 
         // Run migrations
         sqlx::migrate!("./migrations")
@@ -187,8 +477,30 @@ impl Database {
             .await
             .expect("failed to run database migrations");
 
+        // 幂等补齐 0.4.2 重排后的 Wiki/RAG 配置列：迁移编号重排（旧 047/048/049 → 050/051/052）
+        // 后，升级库若再跑 051/052 的 ALTER ADD COLUMN 会因列已存在报 duplicate column
+        // → 启动 panic 闪退（用户实测）。列现在由这里按存在性幂等补齐。
+        ensure_wiki_schema_columns(&pool)
+            .await
+            .expect("failed to ensure wiki/rag schema columns");
+
+        // 补建升级前切片的关键词投影，不改动已有正文和向量。
+        crate::services::knowledge::repository::KbRepository::new(pool.clone())
+            .backfill_search_text()
+            .await
+            .expect("failed to backfill knowledge search index");
+
         // Seed built-in security rules if table exists and is empty
         let _ = crate::security::rules::seed_builtin_rules(&pool).await;
+
+        // 启动写入后尽量回写；运行中由每个连接的自动检查点继续处理。
+        // PASSIVE 未完成回写不影响已提交数据，检查点失败也不改变原启动异常语义。
+        match checkpoint_wal(&pool).await {
+            Ok((busy, wal_pages, checkpointed_pages)) => log::debug!(
+                "SQLite WAL 检查点: busy={busy}, wal_pages={wal_pages}, checkpointed_pages={checkpointed_pages}"
+            ),
+            Err(error) => log::warn!("SQLite WAL 检查点失败，继续启动: {error}"),
+        }
 
         Self { pool }
     }
@@ -210,6 +522,16 @@ mod tests {
             .connect(&format!("sqlite://{}?mode=rwc", db_path.display()))
             .await
             .expect("connect test db")
+    }
+
+    async fn wal_pool(db_path: &Path, max_connections: u32) -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(max_connections)
+            .connect_with(sqlite_connect_options(db_path))
+            .await
+            .expect("connect WAL fixture");
+        assert!(enable_wal_best_effort(&pool).await, "WAL 应启用");
+        pool
     }
 
     /// 在数据库里模拟旧版迁移记录（版本 5）与一条业务数据。
@@ -362,5 +684,480 @@ mod tests {
 
         pool.close().await;
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// 旧 Windows 安装包按 CRLF 编译迁移，新版锁定 LF；真实启动路径仍须能升级。
+    #[tokio::test]
+    async fn startup_upgrades_windows_crlf_migration_history() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = test_pool(&dir.join("damaoapi.db")).await;
+        let legacy = sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                sqlx::migrate!("./migrations")
+                    .iter()
+                    .filter(|migration| migration.version <= 45)
+                    .map(|migration| {
+                        sqlx::migrate::Migration::new(
+                            migration.version,
+                            migration.description.clone(),
+                            migration.migration_type,
+                            migration
+                                .sql
+                                .replace("\r\n", "\n")
+                                .replace('\n', "\r\n")
+                                .into(),
+                            migration.no_tx,
+                        )
+                    })
+                    .collect(),
+            ),
+            ..sqlx::migrate::Migrator::DEFAULT
+        };
+        legacy.run(&pool).await.unwrap();
+        sqlx::query("INSERT INTO prompt_templates (id, template_key, version, content, active, created_at) VALUES ('upgrade-sentinel', 'upgrade-test', 1, 'preserved', 0, '2026-10-09')")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let startup_dir = dir.clone();
+        let startup = tokio::spawn(async move {
+            let db = Database::new_with_path(&startup_dir).await;
+            assert_eq!(current_db_version(&db.pool).await, migration_max_version());
+            let content: String = sqlx::query_scalar(
+                "SELECT content FROM prompt_templates WHERE id = 'upgrade-sentinel'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+            assert_eq!(content, "preserved");
+            assert_eq!(
+                fix_migration_line_ending_checksums(&db.pool).await.unwrap(),
+                0
+            );
+            db.pool.close().await;
+            // 重启不会再次修复，也不会重复执行历史迁移。
+            let reopened = Database::new_with_path(&startup_dir).await;
+            assert_eq!(
+                current_db_version(&reopened.pool).await,
+                migration_max_version()
+            );
+            reopened.pool.close().await;
+        })
+        .await;
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            startup.is_ok(),
+            "CRLF 迁移历史不能导致启动 panic: {startup:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn line_ending_repair_preserves_unknown_checksums_and_is_idempotent() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = test_pool(&dir.join("damaoapi.db")).await;
+        let migrator = sqlx::migrate!("./migrations");
+        migrator.run(&pool).await.unwrap();
+        let unknown = vec![0xab; 48];
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
+            .bind(&unknown)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let migration = migrator
+            .iter()
+            .find(|migration| migration.version == 2)
+            .unwrap();
+        use sha2::Digest;
+        let crlf = migration.sql.replace("\r\n", "\n").replace('\n', "\r\n");
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 2")
+            .bind(sha2::Sha384::digest(crlf.as_bytes()).to_vec())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(fix_migration_line_ending_checksums(&pool).await.unwrap(), 1);
+        assert_eq!(fix_migration_line_ending_checksums(&pool).await.unwrap(), 0);
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, unknown);
+        assert!(matches!(
+            migrator.run(&pool).await,
+            Err(sqlx::migrate::MigrateError::VersionMismatch(1))
+        ));
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_database_enables_wal_and_pool_connections_keep_timeout_config() {
+        let dir = temp_dir();
+        let db = Database::new_with_path(&dir).await;
+        // 同时持有五个连接，确保不是在同一连接上重复检查 PRAGMA。
+        let mut connections = Vec::new();
+        for _ in 0..5 {
+            connections.push(db.pool.acquire().await.unwrap());
+        }
+        for connection in &mut connections {
+            let sqlite_version: String = sqlx::query_scalar("SELECT sqlite_version()")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(sqlite_version, "3.51.3", "SQLx 使用已修复的实际 SQLite");
+            // WAL 是启动期一次性设置的持久属性，对所有连接生效。
+            let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(journal, "wal");
+            let timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(timeout, 5_000);
+            // SQLite 默认 wal_autocheckpoint 即 1000 页。
+            let pages: i64 = sqlx::query_scalar("PRAGMA wal_autocheckpoint")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(pages, 1_000);
+            let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(synchronous, 2, "保持 FULL synchronous");
+        }
+        drop(connections);
+        db.pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_converts_legacy_delete_database_and_close_reopen_preserves_data() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("damaoapi.db");
+        let legacy = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Delete),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE legacy_items (name TEXT NOT NULL)")
+            .execute(&legacy)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO legacy_items VALUES ('committed-before-WAL')")
+            .execute(&legacy)
+            .await
+            .unwrap();
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&legacy)
+            .await
+            .unwrap();
+        assert_eq!(journal, "delete");
+        legacy.close().await;
+
+        let db = Database::new_with_path(&dir).await;
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(journal, "wal");
+        sqlx::query("INSERT INTO legacy_items VALUES ('committed-after-WAL')")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.pool.close().await;
+
+        let reopened = Database::new_with_path(&dir).await;
+        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM legacy_items ORDER BY rowid")
+            .fetch_all(&reopened.pool)
+            .await
+            .unwrap();
+        assert_eq!(names, ["committed-before-WAL", "committed-after-WAL"]);
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap();
+        assert_eq!(journal, "wal");
+        reopened.pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 回归测试（Windows 升级白屏）：v0.4.0 初版把 DELETE→WAL 转换放在
+    /// 建连选项里强制执行，文件被占用时连接失败 → 启动 `expect` panic。
+    /// 现在 WAL 启用是 best-effort：被独占写锁持有时应放弃并保持原模式，
+    /// 锁释放后重试成功。
+    #[tokio::test]
+    async fn wal_enable_failure_while_locked_degrades_instead_of_panicking() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("damaoapi.db");
+
+        // 夹具：DELETE 模式库 + 另一连接持有写锁（模拟升级时旧实例
+        // 未退出、杀毒/同步工具短暂持锁等占用场景）。
+        let locker = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Delete),
+            )
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)")
+            .execute(&locker)
+            .await
+            .unwrap();
+        let mut tx = locker.begin().await.unwrap();
+        sqlx::query("INSERT INTO t VALUES (1)")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+
+        // 待启用 WAL 的池：busy_timeout 调短，避免测试等待完整 5 秒。
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_path)
+                    .busy_timeout(Duration::from_millis(50)),
+            )
+            .await
+            .unwrap();
+
+        // 关键断言：转换失败不 panic，优雅返回 false 并保持原模式。
+        assert!(
+            !enable_wal_best_effort(&pool).await,
+            "被写锁占用时应放弃启用 WAL"
+        );
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(journal, "delete", "库应保持原 DELETE 模式");
+
+        // 锁释放后重试应成功（升级后下一次启动的常规路径）。
+        tx.rollback().await.unwrap();
+        locker.close().await;
+        assert!(
+            enable_wal_best_effort(&pool).await,
+            "锁释放后 WAL 启用应成功"
+        );
+        let journal: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(journal, "wal");
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wal_reader_keeps_snapshot_without_blocking_writer_or_passive_checkpoint() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = wal_pool(&dir.join("damaoapi.db"), 5).await;
+        sqlx::query("CREATE TABLE status_fixture (status TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO status_fixture VALUES ('before')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        checkpoint_wal(&pool).await.unwrap();
+
+        let mut reader = pool.begin().await.unwrap();
+        let before: String = sqlx::query_scalar("SELECT status FROM status_fixture")
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap();
+        assert_eq!(before, "before");
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            sqlx::query("UPDATE status_fixture SET status = 'after'").execute(&pool),
+        )
+        .await
+        .expect("WAL 读快照不应阻止另一个连接提交短写入")
+        .unwrap();
+        let snapshot: String = sqlx::query_scalar("SELECT status FROM status_fixture")
+            .fetch_one(&mut *reader)
+            .await
+            .unwrap();
+        assert_eq!(snapshot, "before", "原读快照仍然一致");
+        let (_, pages, checkpointed) =
+            tokio::time::timeout(Duration::from_secs(2), checkpoint_wal(&pool))
+                .await
+                .expect("PASSIVE 不等待长读结束")
+                .unwrap();
+        assert!(pages > checkpointed, "长读保留了尚不能回写的 WAL 帧");
+        reader.rollback().await.unwrap();
+        let (busy, pages, checkpointed) = checkpoint_wal(&pool).await.unwrap();
+        assert_eq!(busy, 0);
+        assert_eq!(pages, checkpointed);
+        let committed: String = sqlx::query_scalar("SELECT status FROM status_fixture")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(committed, "after");
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn vacuum_backup_restores_committed_data_that_is_only_in_wal() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("damaoapi.db");
+        let pool = wal_pool(&db_path, 1).await;
+        seed_legacy_db(&pool).await;
+        checkpoint_wal(&pool).await.unwrap();
+        // 单连接关闭自动检查点，证明新提交仍只位于 WAL，而不是主数据库文件。
+        sqlx::query("PRAGMA wal_autocheckpoint=0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let main_before = std::fs::read(&db_path).unwrap();
+        sqlx::query("INSERT INTO items (name) VALUES ('committed-only-in-WAL')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&db_path).unwrap(), main_before);
+        assert!(std::fs::metadata(dir.join("damaoapi.db-wal")).unwrap().len() > 32);
+
+        let backup = backup_before_migration(&pool, &db_path)
+            .await
+            .unwrap()
+            .unwrap();
+        let restored_path = dir.join("restored.db");
+        // VACUUM 成功后目标是独立完整快照；恢复到没有旧 sidecar 的新路径。
+        std::fs::copy(&backup, &restored_path).unwrap();
+        let restored = wal_pool(&restored_path, 1).await;
+        let names: Vec<String> = sqlx::query_scalar("SELECT name FROM items ORDER BY id")
+            .fetch_all(&restored)
+            .await
+            .unwrap();
+        assert_eq!(names, ["pre-upgrade-data", "committed-only-in-WAL"]);
+        let version: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&restored)
+            .await
+            .unwrap();
+        assert_eq!(version, 5);
+        sqlx::query("INSERT INTO items (name) VALUES ('source-still-writable')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        restored.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn wal_backup_error_preserves_source_data_and_keeps_it_writable() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = wal_pool(&dir.join("damaoapi.db"), 1).await;
+        seed_legacy_db(&pool).await;
+        let invalid_target = dir.join("nonexistent-parent").join("damaoapi.db");
+        let error = backup_before_migration(&pool, &invalid_target)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with("创建备份失败:"));
+        let original: String = sqlx::query_scalar("SELECT name FROM items WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(original, "pre-upgrade-data");
+        sqlx::query("INSERT INTO items (name) VALUES ('continue-after-backup-error')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 0.4.2 升级库兼容：051/052 在注释追加（commit 5977100）之前已应用的库，
+    /// _sqlx_migrations 记录的是旧文件的 checksum，直接跑迁移会 VersionMismatch(51)
+    /// 启动 panic。修复后 checksum 应与当前文件对齐，迁移可正常完成。
+    #[tokio::test]
+    async fn test_fix_reranked_migration_checksums() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("reranked-checksum.db");
+        let pool = test_pool(&db_path).await;
+
+        // 按当前迁移集正常应用全部迁移（模拟已升级到 0.4.2 的库）
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        // 把 51/52 的 checksum 回写成注释追加前的旧值（真实升级库现场，
+        // 旧值取自 commit 064b6d3 版本迁移文件的 SHA-384）
+        let old_051 = hex::decode(
+            "e2c772ff918bb12b80a1cfaca111980875680e95584701a16fff9384ade5f6b5fb30cc5b76cdf4bd07ac6cc7d9e600a4",
+        )
+        .unwrap();
+        let old_052 = hex::decode(
+            "805e2256220d25344336ad1ae22c2d5c130396d8dfe67bb32c46a55dd0fc3244c00be8674fa575004d1d1e537ce2db6b",
+        )
+        .unwrap();
+        for (version, old) in [(51i64, old_051), (52i64, old_052)] {
+            sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                .bind(&old)
+                .bind(version)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // 未修复前 migrate 应报 VersionMismatch
+        let before = sqlx::migrate!("./migrations").run(&pool).await;
+        assert!(before.is_err(), "旧 checksum 未修复时迁移应失败");
+
+        // 执行 checksum 兼容修复
+        fix_legacy_migration_checksums(&pool).await;
+
+        // 修复后 checksum 与当前迁移文件一致，迁移可正常跑完
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("修复后迁移应成功");
+
+        let migrator = sqlx::migrate!("./migrations");
+        for version in [51i64, 52i64] {
+            let stored: Vec<u8> =
+                sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+                    .bind(version)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let current = migrator
+                .iter()
+                .find(|m| m.version == version)
+                .unwrap()
+                .checksum
+                .to_vec();
+            assert_eq!(
+                stored, current,
+                "版本 {version} 的 checksum 应已对齐当前文件"
+            );
+        }
+
+        pool.close().await;
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

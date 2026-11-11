@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::{
     auth_provider::{
         codex_login::{CodexLogin, TauriLoginRuntime, CODEX_IMPORT_NOTICE},
+        service::{ResetCreditsSnapshotDto, ResetOperationResultDto},
         AuthAccountSummary, LoginRuntime, LoginStep, ProviderError, ProviderKind, ProviderPayload,
     },
     db::{
@@ -47,6 +48,8 @@ pub struct AuthAccountDto {
     pub models: Vec<ModelState>,
     pub quota: Option<QuotaState>,
     pub model_mapping: serde_json::Value,
+    /// 被关闭的映射对（迁移 042）：`[[from, to], ...]`，供前端渲染开关状态。
+    pub model_mapping_disabled: serde_json::Value,
     pub expires_at: Option<String>,
     #[serde(rename = "hasRefreshToken")]
     pub has_refresh_token: bool,
@@ -98,6 +101,7 @@ impl TryFrom<AuthAccountSummary> for AuthAccountDto {
             models: value.models.models,
             quota: value.quota,
             model_mapping: value.model_mapping,
+            model_mapping_disabled: value.model_mapping_disabled,
             expires_at: value.expires_at,
             has_refresh_token: value.has_refresh_token,
             last_refreshed_at: value.last_refreshed_at,
@@ -147,6 +151,8 @@ pub struct AuthUpdateInput {
     pub priority: i64,
     pub weight: i64,
     pub model_mapping: Option<serde_json::Value>,
+    /// 被关闭的映射对（迁移 042）：`[[from, to], ...]`。None = 不修改。
+    pub model_mapping_disabled: Option<serde_json::Value>,
 }
 
 /// Renderer-safe interactive-login session.  It intentionally contains no
@@ -392,8 +398,7 @@ impl LoginSessions {
                 session.status.state = "failed".into();
                 session.status.step = None;
                 session.status.error_code = Some(login_error_code(&error).into());
-                session.status.error =
-                    Some(login_error_message_for(&session.status.provider, &error));
+                session.status.error = Some(login_error_message(&error));
             }
         }
     }
@@ -424,19 +429,6 @@ fn login_error_code(error: &ProviderError) -> &'static str {
 }
 
 fn login_error_message(error: &ProviderError) -> String {
-    login_error_message_for("", error)
-}
-
-fn login_error_message_for(provider: &str, error: &ProviderError) -> String {
-    if provider == "grok"
-        && matches!(
-            error,
-            ProviderError::Retryable | ProviderError::DeviceAuthorizationFailed
-        )
-    {
-        return "无法连接 Grok 授权服务（auth.x.ai）。请先在「设置 → 出站代理」开启可访问境外网络的代理，然后重试。"
-            .to_owned();
-    }
     match error {
         ProviderError::ValidationRequired { url } if url.starts_with("https://") => {
             format!("Google 账号需要先完成验证才能使用 Code Assist。请打开：{url}")
@@ -465,8 +457,35 @@ fn safe_error(error: ProviderError) -> String {
     match error {
         ProviderError::ValidationRequired { .. }
         | ProviderError::PermissionDenied
-        | ProviderError::CredentialMigrationRequired => login_error_message(&error),
+        | ProviderError::CredentialMigrationRequired
+        | ProviderError::BrowserOpenFailed => login_error_message(&error),
         _ => "Auth operation failed".to_owned(),
+    }
+}
+
+fn reset_safe_error(error: ProviderError) -> String {
+    match error {
+        ProviderError::UnsupportedFeatures { .. } => {
+            "Codex 重置卡接口暂不可用，请打开 https://chatgpt.com/codex/settings/usage 查看额度。"
+                .to_owned()
+        }
+        ProviderError::Unauthorized => "Codex 登录态已失效，请重新登录。".to_owned(),
+        ProviderError::PermissionDenied => "Codex 账号没有重置额度权限。".to_owned(),
+        ProviderError::InvalidPayload => "重置卡已失效或不属于当前账号。".to_owned(),
+        ProviderError::Retryable => {
+            "重置请求结果未知，请稍后查看操作状态，不要重复提交；官方用量页：https://chatgpt.com/codex/settings/usage".to_owned()
+        }
+        ProviderError::Protocol => {
+            "Codex 重置接口返回了无法识别的结果，请打开官方用量页核对。".to_owned()
+        }
+        _ => "重置额度操作失败，请稍后重试。".to_owned(),
+    }
+}
+
+fn reset_list_safe_error(error: ProviderError) -> String {
+    match error {
+        ProviderError::Retryable => "重置卡查询失败，请检查「设置 → 服务配置」中的网络代理是否正在运行；本次没有发送消费请求。".to_owned(),
+        other => reset_safe_error(other),
     }
 }
 
@@ -485,9 +504,12 @@ fn provider_kind(provider: Option<String>) -> Result<ProviderKind, String> {
     let provider = provider.unwrap_or_else(|| "codex".to_owned());
     let kind = ProviderKind::from(provider.trim());
     match kind {
-        ProviderKind::Codex | ProviderKind::Kimi | ProviderKind::Gemini | ProviderKind::Grok => {
-            Ok(kind)
-        }
+        ProviderKind::Codex
+        | ProviderKind::Kimi
+        | ProviderKind::Gemini
+        | ProviderKind::Grok
+        | ProviderKind::WorkBuddy
+        | ProviderKind::Qoder => Ok(kind),
         ProviderKind::Other(_) => Err("Unsupported auth provider".to_owned()),
     }
 }
@@ -681,7 +703,6 @@ fn refuse_device_code_login(kind: &ProviderKind) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
 /// Validate and normalize a Codex OAuth loopback callback URL.
 ///
 /// Only `localhost`/`127.0.0.1`/`::1` hosts on ports `1455`/`1457` with the exact
@@ -742,6 +763,7 @@ pub struct AuthProviderDto {
     pub supports_import: bool,
     pub supports_export: bool,
     pub supports_quota: bool,
+    pub supports_reset_credit: bool,
 }
 
 /// Registered providers available for interactive login (renderer-safe spec).
@@ -762,6 +784,7 @@ pub async fn auth_providers_list() -> Result<Vec<AuthProviderDto>, String> {
             supports_import: spec.supports_import,
             supports_export: spec.supports_export,
             supports_quota: spec.supports_quota,
+            supports_reset_credit: spec.supports_reset_credit,
         })
         .collect())
 }
@@ -1005,6 +1028,51 @@ pub async fn auth_refresh_quota(
 }
 
 #[tauri::command]
+pub async fn auth_list_reset_credits(
+    id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<ResetCreditsSnapshotDto, String> {
+    validate_account_id(&id)?;
+    state
+        .auth_service
+        .list_reset_credits(&id)
+        .await
+        .map_err(reset_list_safe_error)
+}
+
+#[tauri::command]
+pub async fn auth_consume_reset_credit(
+    id: String,
+    credit_id: String,
+    operation_id: Option<String>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<ResetOperationResultDto, String> {
+    validate_account_id(&id)?;
+    if credit_id.trim().is_empty() || credit_id.len() > 512 {
+        return Err("Invalid reset credit".to_owned());
+    }
+    state
+        .auth_service
+        .consume_reset_credit(&id, &credit_id, operation_id.as_deref())
+        .await
+        .map_err(reset_safe_error)
+}
+
+#[tauri::command]
+pub async fn auth_resume_reset_operation(
+    id: String,
+    operation_id: String,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<ResetOperationResultDto, String> {
+    validate_account_id(&id)?;
+    state
+        .auth_service
+        .resume_reset_operation(&id, &operation_id)
+        .await
+        .map_err(reset_safe_error)
+}
+
+#[tauri::command]
 pub async fn auth_sync_models(
     id: String,
     state: tauri::State<'_, Arc<AppState>>,
@@ -1089,6 +1157,29 @@ pub async fn auth_toggle(
     )
 }
 
+/// 映射对快捷开启/关闭（迁移 042）：整体替换 `model_mapping_disabled`，
+/// 不触碰其余字段。前端（卡片/列表视图）乐观更新后调用。
+#[tauri::command]
+pub async fn auth_update_mapping_disabled(
+    id: String,
+    disabled: Vec<Vec<String>>,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<AuthAccountDto, String> {
+    validate_account_id(&id)?;
+    let json = serde_json::to_string(&disabled).map_err(|_| storage_error())?;
+    let repository = Repository::new(state.db.pool.clone());
+    repository
+        .update_auth_account_mapping_disabled(&id, &json)
+        .await
+        .map_err(|_| storage_error())?;
+    dto_from_account(
+        repository
+            .get_auth_account(&id)
+            .await
+            .map_err(|_| storage_error())?,
+    )
+}
+
 #[tauri::command]
 pub async fn auth_quota_status(
     id: String,
@@ -1120,9 +1211,29 @@ pub async fn auth_update(
     let model_mapping_json = input
         .model_mapping
         .as_ref()
-        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()))
+        .map(|v| {
+            let mut normalized = v.clone();
+            crate::db::models::normalize_model_mapping(&mut normalized);
+            serde_json::to_string(&normalized).unwrap_or_else(|_| "{}".to_string())
+        })
         .unwrap_or_else(|| "{}".to_string());
     let repository = Repository::new(state.db.pool.clone());
+    // None = 不修改（沿用库中现值）；Some = 整体替换。
+    let current_disabled = repository
+        .get_auth_account(&input.id)
+        .await
+        .ok()
+        .map(|account| account.model_mapping_disabled)
+        .unwrap_or_else(|| "[]".to_string());
+    let model_mapping_disabled_json = input
+        .model_mapping_disabled
+        .as_ref()
+        .map(|v| {
+            let mut normalized = v.clone();
+            crate::db::models::normalize_model_mapping_disabled(&mut normalized);
+            serde_json::to_string(&normalized).unwrap_or_else(|_| "[]".to_string())
+        })
+        .unwrap_or(current_disabled);
     repository
         .update_auth_account(
             &input.id,
@@ -1130,6 +1241,7 @@ pub async fn auth_update(
             input.priority,
             input.weight,
             &model_mapping_json,
+            &model_mapping_disabled_json,
         )
         .await
         .map_err(|_| storage_error())?;
@@ -1182,6 +1294,7 @@ mod tests {
             model_states_json: json!({"version":1,"models":[]}).to_string(),
             attributes_json: json!({"email":"person@example.test","plan_type":"plus","ignored":"secret"}).to_string(),
             model_mapping_json: "{}".to_string(),
+            model_mapping_disabled: "[]".to_string(),
             payload_json: json!({"access_token":ACCESS,"refresh_token":REFRESH,"id_token":ID_TOKEN,"expires_at":"2030-01-01T00:00:00Z"}).to_string(),
             last_refreshed_at: None, last_models_sync_at: None, next_refresh_after: None,
             next_retry_after: None, created_at: "2026-01-01T00:00:00Z".into(), updated_at: "2026-01-01T00:00:00Z".into(),
@@ -1197,6 +1310,7 @@ mod tests {
                 priority: 0,
                 weight: 1,
                 model_mapping: None,
+                model_mapping_disabled: None,
             },
             AuthUpdateInput {
                 id: "account-1".into(),
@@ -1204,6 +1318,7 @@ mod tests {
                 priority: -1,
                 weight: 1,
                 model_mapping: None,
+                model_mapping_disabled: None,
             },
             AuthUpdateInput {
                 id: "account-1".into(),
@@ -1211,6 +1326,7 @@ mod tests {
                 priority: 0,
                 weight: 0,
                 model_mapping: None,
+                model_mapping_disabled: None,
             },
         ] {
             assert!(validate_update(&input).is_err());
@@ -1270,6 +1386,18 @@ mod tests {
         assert!(!encoded.contains("access_token") && !encoded.contains("refresh_token"));
     }
 
+    #[test]
+    fn account_dto_normalizes_historical_model_mapping_names() {
+        let mut account = account_fixture();
+        account.model_mapping_json = json!({" alias ": " upstream "}).to_string();
+        account.model_mapping_disabled = json!([[" alias ", " upstream "]]).to_string();
+
+        let dto = dto_from_account(account).unwrap();
+
+        assert_eq!(dto.model_mapping, json!({"alias": "upstream"}));
+        assert_eq!(dto.model_mapping_disabled, json!([["alias", "upstream"]]));
+    }
+
     async fn test_repository() -> Repository {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1278,6 +1406,38 @@ mod tests {
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         Repository::new(pool)
+    }
+
+    #[tokio::test]
+    async fn mapping_disabled_shortcut_normalizes_names_before_storage() {
+        let repository = test_repository().await;
+        let account = repository
+            .upsert_by_provider_account_id(&AuthAccountUpsert {
+                provider: "codex".into(),
+                label: "Codex".into(),
+                account_id: "provider-normalize".into(),
+                attributes: json!({}),
+                payload: json!({"version": 1}),
+                last_refreshed_at: None,
+                next_refresh_after: None,
+                next_retry_after: None,
+            })
+            .await
+            .unwrap();
+
+        repository
+            .update_auth_account_mapping_disabled(
+                &account.id,
+                &json!([[" alias ", " upstream "], [" ", "upstream"]]).to_string(),
+            )
+            .await
+            .unwrap();
+
+        let stored = repository.get_auth_account(&account.id).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&stored.model_mapping_disabled).unwrap(),
+            json!([["alias", "upstream"]])
+        );
     }
 
     #[tokio::test]
@@ -1370,7 +1530,7 @@ mod tests {
         assert_eq!(gemini.login_methods, vec!["browser_callback".to_owned()]);
         assert!(!gemini.supports_import);
         assert!(!gemini.supports_export);
-        assert!(!gemini.supports_quota);
+        assert!(gemini.supports_quota);
         let grok = providers.iter().find(|p| p.id == "grok").unwrap();
         assert_eq!(grok.display_name, "Grok");
         assert_eq!(grok.icon_key, "grok");
@@ -1379,7 +1539,13 @@ mod tests {
         assert!(!grok.supports_import);
         assert!(!grok.supports_export);
         assert!(!grok.supports_quota);
-        assert_eq!(providers.len(), 4);
+        let qoder = providers.iter().find(|p| p.id == "qoder").unwrap();
+        assert_eq!(qoder.display_name, "Qoder");
+        assert_eq!(qoder.login_mode, "device_code");
+        assert!(qoder.supports_import);
+        assert!(!qoder.supports_export);
+        assert!(!qoder.supports_quota);
+        assert_eq!(providers.len(), 6);
     }
 
     #[tokio::test]

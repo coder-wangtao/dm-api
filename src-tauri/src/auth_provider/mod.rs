@@ -10,21 +10,40 @@ pub mod grok_login;
 pub mod kimi_backend;
 pub mod kimi_login;
 pub mod maintenance;
+pub mod qoder_backend;
+pub mod qoder_cosy;
+pub mod qoder_login;
 pub mod service;
 pub mod spec;
 pub mod types;
-
-use std::{collections::HashMap, sync::Arc};
+pub mod workbuddy_backend;
+pub mod workbuddy_login;
 
 use async_trait::async_trait;
+use std::{collections::HashMap, sync::Arc};
 
 pub use crate::db::models::{AuthAccount, QuotaState};
 pub use spec::{AuthLoginMode, AuthNonStreamFraming, ProviderSpec};
 pub use types::{
     AuthAccountSummary, AuthenticatedLogin, LoginResult, MultiImportResult, ProviderError,
     ProviderKind, ProviderLoginContext, ProviderModels, ProviderPayload, ProviderRequest,
-    RefreshedPayload, ReplacementContext,
+    RefreshedPayload, ReplacementContext, ResetCredit, ResetCreditCode, ResetCreditOutcome,
+    ResetCreditsSnapshot,
 };
+
+/// 流式出站客户端：只限制连接建立时间，**不设总超时**。
+///
+/// reqwest 的 `Client::timeout` 覆盖从发送到读完响应体的整段耗时；用它跑 SSE
+/// 会在固定秒数处切断仍在正常输出的长流，下游表现为
+/// `stream interrupted: error decoding response body (root: operation timed out)`。
+/// 因此所有 provider 的**流式**出站都必须使用这个客户端；非流式请求继续用各自
+/// 带总超时的客户端。连接超时与渠道路径的 `streaming_client` 保持一致。
+pub(crate) fn streaming_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("streaming provider http client")
+}
 
 /// Progress marker for an interactive provider login.  Concrete providers map
 /// their real work onto these steps; the command layer never fabricates
@@ -143,6 +162,30 @@ pub trait Provider: Send + Sync {
     ) -> Result<Option<QuotaState>, ProviderError> {
         Ok(None)
     }
+
+    /// 查询 provider 提供的额度重置卡。未实现的 provider 在发网前失败。
+    async fn list_reset_credits(
+        &self,
+        _account: &AuthAccount,
+        _payload: &ProviderPayload,
+    ) -> Result<ResetCreditsSnapshot, ProviderError> {
+        Err(ProviderError::UnsupportedFeatures {
+            pointer: "/reset_credits/list".into(),
+        })
+    }
+
+    /// 消费一张额度重置卡。调用方必须传入持久化的幂等键。
+    async fn consume_reset_credit(
+        &self,
+        _account: &AuthAccount,
+        _payload: &ProviderPayload,
+        _redeem_request_id: &str,
+        _credit_id: &str,
+    ) -> Result<ResetCreditOutcome, ProviderError> {
+        Err(ProviderError::UnsupportedFeatures {
+            pointer: "/reset_credits/consume".into(),
+        })
+    }
 }
 
 /// Runtime registry, deliberately separate from persisted provider strings.
@@ -161,6 +204,8 @@ impl Default for ProviderRegistry {
         registry.register(Arc::new(kimi_backend::KimiProvider::new()));
         registry.register(Arc::new(gemini_backend::GeminiProvider::new()));
         registry.register(Arc::new(grok_backend::GrokProvider::new()));
+        registry.register(Arc::new(workbuddy_backend::WorkBuddyProvider::new()));
+        registry.register(Arc::new(qoder_backend::QoderProvider::new()));
         registry
     }
 }

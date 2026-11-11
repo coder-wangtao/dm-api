@@ -50,6 +50,7 @@ pub struct ProviderSpec {
     pub supports_import: bool,
     pub supports_export: bool,
     pub supports_quota: bool,
+    pub supports_reset_credit: bool,
 }
 
 const CODEX: ProviderSpec = ProviderSpec {
@@ -61,6 +62,31 @@ const CODEX: ProviderSpec = ProviderSpec {
     supports_import: true,
     supports_export: true,
     supports_quota: true,
+    supports_reset_credit: true,
+};
+
+const KIMI: ProviderSpec = ProviderSpec {
+    kind: "kimi",
+    display_name: "Kimi Code",
+    icon_key: "moonshot",
+    login_mode: AuthLoginMode::DeviceCode,
+    login_methods: &[AuthLoginMode::DeviceCode],
+    supports_import: false,
+    supports_export: false,
+    supports_quota: false,
+    supports_reset_credit: false,
+};
+
+const GEMINI: ProviderSpec = ProviderSpec {
+    kind: "gemini",
+    display_name: "Antigravity",
+    icon_key: "google",
+    login_mode: AuthLoginMode::BrowserCallback,
+    login_methods: &[AuthLoginMode::BrowserCallback],
+    supports_import: false,
+    supports_export: false,
+    supports_quota: true,
+    supports_reset_credit: false,
 };
 
 const GROK: ProviderSpec = ProviderSpec {
@@ -72,9 +98,34 @@ const GROK: ProviderSpec = ProviderSpec {
     supports_import: false,
     supports_export: false,
     supports_quota: false,
+    supports_reset_credit: false,
 };
 
-const REGISTERED: &[&ProviderSpec] = &[&CODEX, &GROK];
+const WORKBUDDY: ProviderSpec = ProviderSpec {
+    kind: "workbuddy",
+    display_name: "WorkBuddy",
+    icon_key: "workbuddy",
+    login_mode: AuthLoginMode::DeviceCode,
+    login_methods: &[AuthLoginMode::DeviceCode],
+    supports_import: false,
+    supports_export: false,
+    supports_quota: false,
+    supports_reset_credit: false,
+};
+
+const QODER: ProviderSpec = ProviderSpec {
+    kind: "qoder",
+    display_name: "Qoder",
+    icon_key: "qoder",
+    login_mode: AuthLoginMode::DeviceCode,
+    login_methods: &[AuthLoginMode::DeviceCode],
+    supports_import: true,
+    supports_export: false,
+    supports_quota: false,
+    supports_reset_credit: false,
+};
+
+const REGISTERED: &[&ProviderSpec] = &[&CODEX, &KIMI, &GEMINI, &GROK, &WORKBUDDY, &QODER];
 
 /// Spec for an explicit (non-`Other`) provider kind, if it is a known spec.
 pub fn provider_spec(kind: &ProviderKind) -> Option<&'static ProviderSpec> {
@@ -172,7 +223,19 @@ mod tests {
         assert!(names.contains(&"kimi"));
         assert!(names.contains(&"gemini"));
         assert!(names.contains(&"grok"));
-        assert_eq!(registered_provider_specs().len(), 4);
+        assert!(names.contains(&"qoder"));
+        assert_eq!(registered_provider_specs().len(), 6);
+    }
+
+    #[test]
+    fn qoder_spec_exact_values() {
+        let spec = provider_spec(&ProviderKind::Qoder).expect("qoder spec must exist");
+        assert_eq!(spec.kind, "qoder");
+        assert_eq!(spec.display_name, "Qoder");
+        assert_eq!(spec.login_mode, AuthLoginMode::DeviceCode);
+        assert!(spec.supports_import);
+        assert!(!spec.supports_export);
+        assert!(!spec.supports_quota);
     }
 
     #[test]
@@ -185,7 +248,7 @@ mod tests {
         assert_eq!(spec.login_methods, &[AuthLoginMode::BrowserCallback]);
         assert!(!spec.supports_import);
         assert!(!spec.supports_export);
-        assert!(!spec.supports_quota);
+        assert!(spec.supports_quota);
     }
 
     #[test]

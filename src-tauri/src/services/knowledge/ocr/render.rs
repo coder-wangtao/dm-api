@@ -41,7 +41,7 @@ impl PdfRenderer {
             OcrError::RenderFailed(format!(
                 "未找到 pdfium 动态库。已搜索: {}。\
                  请将 {} 放到可执行文件同目录的 pdfium/ 子目录，\
-                 或设置环境变量 WALIAPI_PDFIUM_PATH 指向库文件（或其所在目录）",
+                 或设置环境变量 DAMAOAPI_PDFIUM_PATH 指向库文件（或其所在目录）",
                 searched,
                 platform_library_name()
             ))
@@ -241,7 +241,7 @@ fn platform_library_name() -> &'static str {
 }
 
 /// 动态库候选路径，按优先级排列：
-/// 1. 环境变量 WALIAPI_PDFIUM_PATH（可指向库文件本体或其所在目录）
+/// 1. 环境变量 DAMAOAPI_PDFIUM_PATH（可指向库文件本体或其所在目录）
 /// 2. 可执行文件同目录 pdfium/ 子目录（Windows/Linux 下 Tauri resources 的落点）
 /// 3. 可执行文件同目录 Resources/pdfium/（tauri dev 物化 bundle.resources 的位置）
 /// 4. macOS .app：Contents/Resources/pdfium/ 以及 glob 保留前缀后的
@@ -250,9 +250,9 @@ fn platform_library_name() -> &'static str {
 ///
 /// 数据目录（Docker/手动部署曾用 pdfium/ 子目录）已从候选中移除：它是文档上传的
 /// 落盘根（用户可写），从那里加载动态库会把上传写穿串联成进程内代码执行（FIX-02）。
-/// 手动部署请用 WALIAPI_PDFIUM_PATH 或把库放到二进制同目录。
+/// 手动部署请用 DAMAOAPI_PDFIUM_PATH 或把库放到二进制同目录。
 fn library_candidates() -> Vec<PathBuf> {
-    let env_path = std::env::var_os("WALIAPI_PDFIUM_PATH").map(PathBuf::from);
+    let env_path = std::env::var_os("DAMAOAPI_PDFIUM_PATH").map(PathBuf::from);
     let exe = std::env::current_exe().ok();
     library_candidates_from(env_path.as_deref(), exe.as_deref())
 }
@@ -346,7 +346,7 @@ mod tests {
         // FIX-02：数据目录是上传落盘根（用户可写），pdfium 候选不得包含数据目录，
         // 防止「上传写穿 + 动态库加载」串联成进程内代码执行。候选只来自 env 与 exe 位置
         // （exe 同目录，以及 .app 包布局下 exe 目录的上一级 Resources/）。
-        let exe = Path::new("/opt/waliapi/bin/waliapi-web");
+        let exe = Path::new("/opt/damaoapi/bin/damaoapi-web");
         let exe_dir = exe.parent().unwrap();
         let bundle_root = exe_dir.parent().unwrap();
         let candidates = library_candidates_from(None, Some(exe));
@@ -360,7 +360,7 @@ mod tests {
 
         // 环境变量覆盖优先；指向目录时拼平台库名，指向文件时原样保留
         let dir =
-            std::env::temp_dir().join(format!("waliapi-pdfium-candidates-{}", std::process::id()));
+            std::env::temp_dir().join(format!("damaoapi-pdfium-candidates-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let from_env_dir = library_candidates_from(Some(&dir), Some(exe));
         assert_eq!(
@@ -378,14 +378,14 @@ mod tests {
     #[test]
     fn macos_app_bundle_searches_glob_prefixed_and_legacy_paths() {
         // 与 0.2.5/0.2.6 安装包、OCR_RENDER_FAILED 弹窗中的搜索列表对齐
-        let exe = Path::new("/Applications/WaLiAPI.app/Contents/MacOS/waliapi");
+        let exe = Path::new("/Applications/DaMaoAPI.app/Contents/MacOS/damaoapi");
         let candidates = library_candidates_from(None, Some(exe));
         let lib = platform_library_name();
         let required = [
-            Path::new("/Applications/WaLiAPI.app/Contents/MacOS/pdfium").join(lib),
-            Path::new("/Applications/WaLiAPI.app/Contents/MacOS/Resources/pdfium").join(lib),
-            Path::new("/Applications/WaLiAPI.app/Contents/Resources/pdfium").join(lib),
-            Path::new("/Applications/WaLiAPI.app/Contents/Resources/resources/pdfium").join(lib),
+            Path::new("/Applications/DaMaoAPI.app/Contents/MacOS/pdfium").join(lib),
+            Path::new("/Applications/DaMaoAPI.app/Contents/MacOS/Resources/pdfium").join(lib),
+            Path::new("/Applications/DaMaoAPI.app/Contents/Resources/pdfium").join(lib),
+            Path::new("/Applications/DaMaoAPI.app/Contents/Resources/resources/pdfium").join(lib),
         ];
         for path in &required {
             assert!(
@@ -397,9 +397,9 @@ mod tests {
 
     #[test]
     fn installed_app_pdfium_is_first_existing_candidate_when_present() {
-        let exe = Path::new("/Applications/WaLiAPI.app/Contents/MacOS/waliapi");
+        let exe = Path::new("/Applications/DaMaoAPI.app/Contents/MacOS/damaoapi");
         let candidates = library_candidates_from(None, Some(exe));
-        let actual = PathBuf::from("/Applications/WaLiAPI.app/Contents/Resources/resources/pdfium")
+        let actual = PathBuf::from("/Applications/DaMaoAPI.app/Contents/Resources/resources/pdfium")
             .join(platform_library_name());
         if !actual.is_file() {
             return;
@@ -418,10 +418,10 @@ mod tests {
     fn missing_library_reports_render_failed() {
         // 用肯定不存在的候选路径，确定性覆盖「未找到库」分支——
         // 开发机上 resources/pdfium 已放置真实库（fetch-pdfium.sh）时也不受影响
-        let bogus = PathBuf::from("/nonexistent-waliapi-dir/pdfium").join(platform_library_name());
+        let bogus = PathBuf::from("/nonexistent-damaoapi-dir/pdfium").join(platform_library_name());
         match PdfRenderer::bind_first(&[bogus]) {
             Err(OcrError::RenderFailed(msg)) => {
-                assert!(msg.contains("WALIAPI_PDFIUM_PATH"));
+                assert!(msg.contains("DAMAOAPI_PDFIUM_PATH"));
             }
             Err(e) => panic!("unexpected error variant: {}", e),
             Ok(_) => panic!("expected failure when pdfium library is absent"),

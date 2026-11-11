@@ -42,7 +42,7 @@ pub fn parse_data_payload(record: &[u8]) -> Result<String, String> {
 /// （转发的字节不经过累积），仅影响落库的 response_choices。
 pub(crate) const MAX_ACCUMULATED_CONTENT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const ACCUMULATION_TRUNCATION_MARKER: &str =
-    "\n\n[... DamaoAPI: accumulated content truncated ...]";
+    "\n\n[... DaMaoAPI: accumulated content truncated ...]";
 
 /// Validate only enough framing to retain the pre-commit failover barrier.
 /// Full protocol validation belongs to the decoder factory selected at prepare
@@ -237,7 +237,6 @@ impl StreamPumpCore {
         Ok(output)
     }
 
-    #[cfg(test)]
     pub fn committed(&self) -> bool {
         self.supervisor.committed()
     }
@@ -509,10 +508,13 @@ fn accumulate_from_sse_event(
                     }
                 }
                 "response.output_item.done" => {
-                    // A completed function_call item carries the full
+                    // A completed function/custom-tool item carries the full
                     // name/arguments — authoritative over the deltas.
                     if let Some(item) = v.get("item") {
-                        if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
+                        if matches!(
+                            item.get("type").and_then(|t| t.as_str()),
+                            Some("function_call" | "custom_tool_call")
+                        ) {
                             let item_id = item
                                 .get("call_id")
                                 .or_else(|| item.get("id"))
@@ -537,7 +539,11 @@ fn accumulate_from_sse_event(
                                 "type": "function",
                                 "function": {
                                     "name": item.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                                    "arguments": item.get("arguments").and_then(|a| a.as_str()).unwrap_or(""),
+                                    "arguments": item
+                                        .get("arguments")
+                                        .or_else(|| item.get("input"))
+                                        .and_then(|a| a.as_str())
+                                        .unwrap_or(""),
                                 }
                             }));
                         }
@@ -796,5 +802,24 @@ mod tests {
             .and_then(|a| a.as_str())
             .unwrap_or("")
             .contains("Paris"));
+    }
+
+    #[test]
+    fn responses_api_custom_tool_call_output_item_is_accumulated() {
+        let (.., tool_calls) = accumulate(
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"custom_tool_call\",\"id\":\"ctc_1\",\"call_id\":\"call_1\",\"name\":\"exec\",\"input\":\"text(tools.exec_command({}))\"}}",
+        );
+        assert_eq!(tool_calls.len(), 1);
+        let tool_call = tool_calls.values().next().unwrap();
+        assert_eq!(
+            tool_call.pointer("/function/name").and_then(|n| n.as_str()),
+            Some("exec")
+        );
+        assert_eq!(
+            tool_call
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str()),
+            Some("text(tools.exec_command({}))")
+        );
     }
 }

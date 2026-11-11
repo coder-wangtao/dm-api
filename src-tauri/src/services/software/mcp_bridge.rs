@@ -230,7 +230,7 @@ pub async fn call_tool(
     if needs_confirmation(&instance.approval_mode, manifest.risk) {
         let confirmed = approval::request_confirmation(
             &state.app_handle,
-            "WaLiAPI · 软件操作确认",
+            "DaMaoAPI · 软件操作确认",
             &format!(
                 "AI 请求执行高风险软件操作：\n\n软件：{}\n工具：{}（{}）\n\n是否允许？",
                 instance.name,

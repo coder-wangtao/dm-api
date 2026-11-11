@@ -100,6 +100,30 @@ fn legacy_schema_migrations() -> Vec<&'static str> {
         )),
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
+            "/migrations/008_knowledge_base.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/009_add_mcp_enabled.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/010_kb_upgrade.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/011_chunk_symbol_metadata.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/012_fts5_hybrid_search.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/013_add_embedding_batch_size.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
             "/migrations/014_add_channel_timeout.sql"
         )),
     ]
@@ -362,7 +386,7 @@ async fn create_new_anthropic_dual_writes_type_and_compat_base() {
     assert_eq!(row.provider.as_deref(), Some("zhipu"));
     assert_eq!(
         row.native_base_url.as_deref(),
-        Some("https://open.bigmodel.cn/api/anthropic")
+        Some("https://open.bigmodel.cn/api/anthropic/v1")
     );
     assert_eq!(row.native_endpoints.as_deref(), Some("[\"messages\"]"));
     // Business fields preserved.
@@ -588,7 +612,7 @@ async fn update_two_step_writes_full_identity_and_revision() {
     assert_eq!(row.provider.as_deref(), Some("zhipu"));
     assert_eq!(
         row.native_base_url.as_deref(),
-        Some("https://open.bigmodel.cn/api/anthropic")
+        Some("https://open.bigmodel.cn/api/anthropic/v1")
     );
     assert_eq!(row.native_endpoints.as_deref(), Some("[\"messages\"]"));
     // api_key untouched (None = keep).
@@ -815,7 +839,8 @@ async fn two_step_update_commits_both_legacy_and_identity() {
     assert_eq!(row.provider.as_deref(), Some("ollama"));
     assert_eq!(
         row.native_base_url.as_deref(),
-        Some("http://localhost:11434")
+        // anthropic 协议存储时统一补 /v1（与 normalize_native_base_url 契约一致）
+        Some("http://localhost:11434/v1")
     );
     // Legacy claude adaptor final URL.
     assert_eq!(
@@ -897,7 +922,7 @@ async fn preset_url_fixtures_new_and_legacy() {
         .await
         .expect("create anthropic");
     assert_eq!(
-        join(row.native_base_url.as_deref().unwrap(), "v1/messages"),
+        join(row.native_base_url.as_deref().unwrap(), "messages"),
         "https://api.anthropic.com/v1/messages"
     );
     assert_eq!(row.channel_type, "claude");
@@ -923,7 +948,7 @@ async fn preset_url_fixtures_new_and_legacy() {
         .await
         .expect("create deepseek");
     assert_eq!(
-        join(row.native_base_url.as_deref().unwrap(), "v1/messages"),
+        join(row.native_base_url.as_deref().unwrap(), "messages"),
         "https://api.deepseek.com/anthropic/v1/messages"
     );
     assert_eq!(row.channel_type, "claude");
@@ -949,7 +974,7 @@ async fn preset_url_fixtures_new_and_legacy() {
         .await
         .expect("create zhipu");
     assert_eq!(
-        join(row.native_base_url.as_deref().unwrap(), "v1/messages"),
+        join(row.native_base_url.as_deref().unwrap(), "messages"),
         "https://open.bigmodel.cn/api/anthropic/v1/messages"
     );
     assert_eq!(
@@ -974,7 +999,7 @@ async fn preset_url_fixtures_new_and_legacy() {
         .await
         .expect("create doubao");
     assert_eq!(
-        join(row.native_base_url.as_deref().unwrap(), "v1/messages"),
+        join(row.native_base_url.as_deref().unwrap(), "messages"),
         "https://ark.cn-beijing.volces.com/api/coding/v1/messages"
     );
     assert_eq!(
@@ -999,7 +1024,7 @@ async fn preset_url_fixtures_new_and_legacy() {
         .await
         .expect("create anthropic/ollama");
     assert_eq!(
-        join(row.native_base_url.as_deref().unwrap(), "v1/messages"),
+        join(row.native_base_url.as_deref().unwrap(), "messages"),
         "http://localhost:11434/v1/messages"
     );
     assert_eq!(row.base_url, "http://localhost:11434/v1");
@@ -1057,5 +1082,33 @@ async fn preset_url_fixtures_new_and_legacy() {
     assert_eq!(
         join(&row.base_url, "chat/completions"),
         "https://api.openai.com/v1/chat/completions"
+    );
+
+    // 8) OpenAI / StepFun（阶跃星辰）：原生 URL 与 legacy 双写 URL 的最终拼接
+    //    结果均为官方地址，旧 type 双写为 openai（不是新造的 "stepfun"）。
+    let row = repo
+        .create_channel(&models::CreateChannelInput {
+            name: "fx-stepfun".into(),
+            channel_type: "".into(),
+            base_url: "".into(),
+            api_key: "sk".into(),
+            models: vec![],
+            protocol: Some("openai".into()),
+            provider: Some("stepfun".into()),
+            native_base_url: Some("https://api.stepfun.com/v1".into()),
+            native_endpoints: Some(vec!["chat_completions".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("create stepfun");
+    assert_eq!(row.channel_type, "openai");
+    assert_eq!(
+        join(row.native_base_url.as_deref().unwrap(), "chat/completions"),
+        "https://api.stepfun.com/v1/chat/completions"
+    );
+    assert_eq!(row.base_url, "https://api.stepfun.com/v1");
+    assert_eq!(
+        join(&row.base_url, "chat/completions"),
+        "https://api.stepfun.com/v1/chat/completions"
     );
 }

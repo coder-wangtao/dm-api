@@ -1,7 +1,7 @@
 [package]
 name = "damaoapi"
-version = "0.3.4"
-description = "DamaoAPI - Local LLM API Gateway"
+version = "0.4.4"
+description = "DaMaoAPI - Local LLM API Gateway"
 authors = ["wangtao"]
 edition = "2021"
 default-run = "damaoapi"
@@ -24,7 +24,9 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-shell = "2"
-tauri-plugin-dialog = "=2.7.2"
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # HTTP Server
 axum = "0.8"
@@ -47,6 +49,8 @@ toml_edit = "0.22"
 
 # Database
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "chrono", "macros"] }
+# 固定含 WAL-reset 修复的原生库；旧 SQLx 通过下方薄转出补丁共享它。
+libsqlite3-sys = { version = "=0.37.0", default-features = false, features = ["bundled", "column_metadata"] }
 
 # Utils
 uuid = { version = "1", features = ["v4"] }
@@ -70,8 +74,35 @@ sha2 = "0.10"
 hex = "0.4"
 bincode = "1"
 base64 = "0.22"
+pdf-extract = "0.7"
+unicode-normalization = "0.1"
+# 知识库 VLM OCR：pdfium 渲染 PDF 页面（动态库运行时加载，见 resources/pdfium/README.md）
+pdfium-render = "0.8"
+image = "0.25"
+
 # Token estimation (fallback when upstream doesn't return usage)
 tiktoken-rs = "0.6"
+
+# Qoder auth provider：COSY 签名（AES-128-CBC 加密用户信息 + RSA 加密密钥 + MD5 摘要）。
+# rsa / md-5 已在依赖树中（sqlx-mysql / lopdf），此处显式声明仅复用既有版本。
+rsa = { version = "0.9", features = ["sha2"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+md-5 = "0.10"
+# rsa 0.9 的 rand_core 与项目 rand 0.9 的 rand_core 版本对齐（避免 trait 不匹配）
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+# tree-sitter code parsing
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+
+# Wiki 项目备份：导出/导入 zip 压缩包（含 raw/assets 图片 token 目录）
+zip = "2"
 
 # Web admin panel
 argon2 = "0.5"
@@ -79,6 +110,7 @@ password-hash = { version = "0.5", features = ["rand_core"] }
 dashmap = "6"
 mime_guess = "2"
 rust-embed = { version = "8", optional = true }
+serde_yaml = "0.9.34"
 
 [features]
 # desktop-ui：桌面专属能力（托盘图标/文件对话框/开机自启/OAuth 打开系统浏览器），
@@ -95,3 +127,6 @@ codegen-units = 1
 # 不要设置 panic = "abort"：release 下它会让 panic 直接终止进程，
 # 代码中依赖 catch_unwind 的护栏（如知识库解析/摄入）与 tokio 任务级 panic 隔离将全部失效（issue #55）
 strip = "debuginfo"
+
+[patch.crates-io]
+libsqlite3-sys = { path = "sqlite-compat/libsqlite3-sys" }

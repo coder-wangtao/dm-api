@@ -10,6 +10,7 @@ import {
   Settings2,
   Server,
   ChevronRight,
+  Database,
   LogOut,
 } from "lucide-react";
 import { serverApi } from "../../lib/api";
@@ -27,6 +28,12 @@ const navItems = [
   },
   { to: "/channels", icon: Radio, label: "渠道" },
   { to: "/api-keys", icon: Key, label: "密钥" },
+  {
+    to: "/services",
+    icon: Database,
+    label: "服务",
+    subLabel: "RAG、Wiki、Link ...",
+  },
   { to: "/logs", icon: ScrollText, label: "日志" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];
@@ -35,7 +42,7 @@ const appVersion = packageJson.version;
 
 /** Web 管理面板：清除会话并回到登录页（桌面端不渲染入口）。 */
 function webLogout() {
-  const token = localStorage.getItem("damao_admin_token");
+  const token = localStorage.getItem("damaoapi_admin_token");
   void fetch("/admin/api/auth/logout", {
     method: "POST",
     headers: {
@@ -43,11 +50,17 @@ function webLogout() {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   }).catch(() => {});
-  localStorage.removeItem("damao_admin_token");
+  localStorage.removeItem("damaoapi_admin_token");
   location.assign("/login");
 }
 
-export function Sidebar() {
+export function Sidebar({
+  hasUpdate,
+  onCheckUpdate,
+}: {
+  hasUpdate: boolean;
+  onCheckUpdate: () => void;
+}) {
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const location = useLocation();
 
@@ -71,19 +84,32 @@ export function Sidebar() {
         <div className="flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white shadow-[0_8px_16px_rgba(47,111,237,0.18)] overflow-hidden">
             <img
-              src="/favicon.ico"
-              alt="DamaoAPI"
+              src="/favicon-preview.png"
+              alt="DaMaoAPI"
               className="h-full w-full object-cover"
             />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
               <div className="text-[20px] font-bold tracking-[-0.04em] text-slate-900 leading-none">
-                DamaoAPI
+                DaMaoAPI
               </div>
-              <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
+              <button
+                onClick={onCheckUpdate}
+                className={`relative rounded-full border px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                  hasUpdate
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-600"
+                    : "border-blue-100 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                }`}
+              >
+                {hasUpdate && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                  </span>
+                )}
                 v{appVersion}
-              </span>
+              </button>
             </div>
             <div className="mt-1.5 text-[11px] font-medium text-slate-500">
               AI 网关 · 统一模型配置和负载

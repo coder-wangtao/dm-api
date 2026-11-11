@@ -20,6 +20,178 @@ impl IdentityDirection {
     }
 }
 
+/// 转发 Responses 历史输入前，修正旧版协议转换产生的非法条目：
+/// - `function_call.id` 必须带 `fc_` 前缀；上游 tool_call id 只属于 `call_id`。
+/// - `reasoning.content` 输入必须为空；旧明文推理迁移到 `summary`。
+/// - `store=false` 时移除没有 `encrypted_content` 的本地 `rs_*` id，避免上游查找
+///   从未持久化的 reasoning 条目。
+///
+/// 这些条目已经写入客户端旧会话，因此需要在 identity 回放路径兼容处理。
+fn normalize_responses_input_items(request: &mut Value) -> Vec<String> {
+    let store_is_disabled = request.get("store").and_then(Value::as_bool) == Some(false);
+    let Some(items) = request.get_mut("input").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+
+    // 旧转换链可能在上游只返回参数、没有返回工具名时生成空名 function_call。
+    // 原生 Responses 会拒绝整个历史；工具名无法可靠反推，因此删除坏调用及其
+    // 配对输出。若同一 call_id 仍有合法调用，则保守保留其输出。
+    let valid_call_ids = items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())
+        })
+        .filter_map(|item| item.get("call_id").and_then(Value::as_str))
+        .filter(|call_id| !call_id.is_empty())
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+    let invalid_call_ids = items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter(|item| {
+            !item
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())
+        })
+        .filter_map(|item| item.get("call_id").and_then(Value::as_str))
+        .filter(|call_id| !call_id.is_empty() && !valid_call_ids.contains(*call_id))
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
+
+    let mut normalized = Vec::new();
+    let original_items = std::mem::take(items);
+    for (index, item) in original_items.into_iter().enumerate() {
+        let item_type = item.get("type").and_then(Value::as_str);
+        let blank_function_call = item_type == Some("function_call")
+            && !item
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty());
+        let paired_output = item_type == Some("function_call_output")
+            && item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .is_some_and(|call_id| invalid_call_ids.contains(call_id));
+        if blank_function_call || paired_output {
+            normalized.push(format!("/input/{index}"));
+        } else {
+            items.push(item);
+        }
+    }
+
+    for item in items.iter_mut() {
+        match item.get("type").and_then(Value::as_str) {
+            Some("function_call") => {
+                let current = item.get("id").and_then(Value::as_str).unwrap_or("");
+                if current.starts_with("fc_") {
+                    continue;
+                }
+                let normalized = match current.strip_prefix("call_") {
+                    // `call_xxx` → `fc_xxx`：确定且可重复，同一轮重试不会换 id。
+                    Some(rest) if !rest.is_empty() => format!("fc_{rest}"),
+                    _ => format!("fc_{}", uuid::Uuid::new_v4().simple()),
+                };
+                if let Some(object) = item.as_object_mut() {
+                    object.insert("id".to_owned(), Value::String(normalized));
+                }
+            }
+            Some("reasoning") => {
+                let Some(object) = item.as_object_mut() else {
+                    continue;
+                };
+
+                // store=false 时，只有带 encrypted_content 的 reasoning 才能跨请求
+                // 回放。Chat/Messages 转换产生的 rs_* 只是本地条目 id，官方上游并未
+                // 持久化；保留它会在修正 content 后继续报 "Item ... not found"。
+                let has_encrypted_content = object
+                    .get("encrypted_content")
+                    .and_then(Value::as_str)
+                    .map(|content| !content.is_empty())
+                    .unwrap_or(false);
+                let has_legacy_content = object
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .map(|content| !content.is_empty())
+                    .unwrap_or(false);
+                if !has_encrypted_content && (store_is_disabled || has_legacy_content) {
+                    object.remove("id");
+                }
+
+                let Some(content) = object.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                if content.is_empty() {
+                    continue;
+                }
+
+                // 旧版 Chat→Responses 把明文推理放在 reasoning.content 中；
+                // 官方 Responses 输入侧要求该数组长度为 0。迁移到受支持的 summary，
+                // 既让旧会话可恢复，也避免丢掉可读推理内容。
+                let legacy_summary = content
+                    .iter()
+                    .filter(|part| {
+                        part.get("type").and_then(Value::as_str) == Some("reasoning_text")
+                    })
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .map(|text| serde_json::json!({"type": "summary_text", "text": text}))
+                    .collect::<Vec<_>>();
+                object.remove("content");
+
+                let summary_is_empty = object
+                    .get("summary")
+                    .and_then(Value::as_array)
+                    .map(|summary| summary.is_empty())
+                    .unwrap_or(true);
+                if summary_is_empty && !legacy_summary.is_empty() {
+                    object.insert("summary".to_owned(), Value::Array(legacy_summary));
+                }
+            }
+            _ => {}
+        }
+    }
+    normalized
+}
+
+/// Codex Responses Lite 把本轮工具注册表放在首个 `additional_tools`
+/// 输入项中，部分 Responses 兼容上游只读取顶层 `tools`。在原生
+/// Responses 转发时保留原输入项，同时在顶层缺失工具时复制一份，避免
+/// 上游把工具调用降级成普通文本。
+fn promote_additional_tools(request: &mut Value) -> bool {
+    let top_level_tools_missing = match request.get("tools") {
+        None => true,
+        Some(Value::Array(tools)) => tools.is_empty(),
+        Some(_) => false,
+    };
+    if !top_level_tools_missing {
+        return false;
+    }
+
+    let tools = request
+        .get("input")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.get("type").and_then(Value::as_str) == Some("additional_tools"))
+        })
+        .and_then(|item| item.get("tools"))
+        .and_then(Value::as_array)
+        .filter(|tools| !tools.is_empty())
+        .cloned();
+    let Some(tools) = tools else {
+        return false;
+    };
+    let Some(object) = request.as_object_mut() else {
+        return false;
+    };
+    object.insert("tools".to_owned(), Value::Array(tools));
+    true
+}
+
 impl CodecDirection for IdentityDirection {
     fn id(&self) -> CodecId {
         CodecId::Native
@@ -57,6 +229,13 @@ impl CodecDirection for IdentityDirection {
         if !object.contains_key("stream") {
             object.insert("stream".to_owned(), Value::Bool(false));
         }
+        let promoted_additional_tools =
+            self.protocol == Protocol::Responses && promote_additional_tools(&mut encoded);
+        let normalized_input_items = if self.protocol == Protocol::Responses {
+            normalize_responses_input_items(&mut encoded)
+        } else {
+            Vec::new()
+        };
         let request_id = request
             .get("id")
             .and_then(Value::as_str)
@@ -66,10 +245,12 @@ impl CodecDirection for IdentityDirection {
             .get("stream")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        Ok((
-            encoded,
-            ConversionContext::new(request_id, mapped_model, stream),
-        ))
+        let mut context = ConversionContext::new(request_id, mapped_model, stream);
+        context.normalized.extend(normalized_input_items);
+        if promoted_additional_tools {
+            context.normalized.push("/tools".to_owned());
+        }
+        Ok((encoded, context))
     }
 
     fn new_response_decoder(
@@ -150,6 +331,9 @@ impl IdentityStreamDecoder {
             Protocol::Gemini => event
                 .get("usageMetadata")
                 .or_else(|| event.pointer("/response/usageMetadata")),
+            // Qoder 的 usage 在内层 OpenAI 兼容事件上，由 Qoder 流解码器
+            // 解信封后作为 Chat 形态喂入 identity 场景仅在原生直通时出现。
+            Protocol::Qoder => event.get("usage"),
         };
         let Some(usage) = usage else { return };
         let merged = self.usage.get_or_insert_with(|| Usage {
@@ -160,6 +344,7 @@ impl IdentityStreamDecoder {
             Protocol::Chat => ("prompt_tokens", "completion_tokens"),
             Protocol::Messages | Protocol::Responses => ("input_tokens", "output_tokens"),
             Protocol::Gemini => ("promptTokenCount", "candidatesTokenCount"),
+            Protocol::Qoder => ("prompt_tokens", "completion_tokens"),
         };
         if let Some(input) = usage.get(input_key).and_then(Value::as_u64) {
             merged.input_tokens = input;
@@ -282,6 +467,7 @@ pub(crate) fn parse_usage(protocol: Protocol, body: &Value) -> Option<Usage> {
             usage.get("input_tokens").and_then(Value::as_u64)
         }
         Protocol::Gemini => usage.get("promptTokenCount").and_then(Value::as_u64),
+        Protocol::Qoder => usage.get("prompt_tokens").and_then(Value::as_u64),
     };
     let output = match protocol {
         Protocol::Chat => usage.get("completion_tokens").and_then(Value::as_u64),
@@ -289,6 +475,7 @@ pub(crate) fn parse_usage(protocol: Protocol, body: &Value) -> Option<Usage> {
             usage.get("output_tokens").and_then(Value::as_u64)
         }
         Protocol::Gemini => usage.get("candidatesTokenCount").and_then(Value::as_u64),
+        Protocol::Qoder => usage.get("completion_tokens").and_then(Value::as_u64),
     };
     Some(Usage {
         input_tokens: input.unwrap_or_default(),

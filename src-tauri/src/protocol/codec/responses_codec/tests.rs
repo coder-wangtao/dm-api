@@ -231,11 +231,11 @@ data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output
 
 #[test]
 fn stream_tool_call_arguments_delivered_whole_not_piecemeal() {
-    // DamaoCode 实测：16 次工具调用全部只收到参数末尾的 "]}"。
+    // DaMaoCode 实测：16 次工具调用全部只收到参数末尾的 "]}"。
     //
     // 起初怀疑是「每条 delta 都重复 id/name，客户端把带 id 当新调用而重置」，
     // 改成仅首个 delta 带身份字段后复测——问题变成只剩*第一个*分片，说明
-    // DamaoCode 根本不做分片累积，而是每次直接用最新收到的 delta.arguments
+    // DaMaoCode 根本不做分片累积，而是每次直接用最新收到的 delta.arguments
     // 覆盖，不管有没有 id。对分片型客户端，唯一安全的做法是不分片：
     // arguments.delta 只更新 call_id/name 等元数据、不下发内容，完整参数
     // 在 arguments.done 时一次性发出。
@@ -409,6 +409,160 @@ fn messages_request_thinking_survives_messages_to_responses() {
 }
 
 #[test]
+fn chat_response_format_maps_to_responses_text_format() {
+    let (encoded, _) = encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "response_format": {"type": "json_object"}}),
+        "m",
+    )
+    .unwrap();
+    assert_eq!(encoded["text"]["format"]["type"], "json_object");
+
+    // Chat 把 schema 嵌在 json_schema 子对象里，Responses 是平铺。
+    let (encoded, _) = encode_chat_to_responses(
+        &serde_json::json!({
+            "model": "m",
+            "messages": [],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "title",
+                    "description": "a title",
+                    "strict": true,
+                    "schema": {"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]}
+                }
+            }
+        }),
+        "m",
+    )
+    .unwrap();
+    assert_eq!(encoded["text"]["format"]["type"], "json_schema");
+    assert_eq!(encoded["text"]["format"]["name"], "title");
+    assert_eq!(encoded["text"]["format"]["description"], "a title");
+    assert_eq!(encoded["text"]["format"]["strict"], true);
+    assert_eq!(encoded["text"]["format"]["schema"]["required"][0], "title");
+    assert!(
+        encoded["text"]["format"].get("json_schema").is_none(),
+        "Responses 侧应是平铺的 format"
+    );
+}
+
+#[test]
+fn chat_response_format_text_means_no_constraint() {
+    let (encoded, context) = encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "response_format": {"type": "text"}}),
+        "m",
+    )
+    .unwrap();
+    assert!(encoded.get("text").is_none());
+    assert!(context.normalized.contains(&"/response_format".to_string()));
+}
+
+#[test]
+fn chat_response_format_malformed_is_rejected() {
+    let error = encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "response_format": {"type": "json_schema"}}),
+        "m",
+    )
+    .unwrap_err();
+    assert!(error
+        .json_pointers
+        .iter()
+        .any(|pointer| pointer.starts_with("/response_format")));
+}
+
+#[test]
+fn chat_sampling_fields_pass_through_or_drop_for_responses_backend() {
+    let (encoded, context) = encode_chat_to_responses(
+        &serde_json::json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "parallel_tool_calls": false,
+            "stop": ["\n\n"],
+            "presence_penalty": 0.5,
+            "frequency_penalty": 0.1,
+            "seed": 7,
+            "user": "u1",
+            "n": 1
+        }),
+        "m",
+    )
+    .unwrap();
+
+    // 与 Messages→Responses 保持一致的字段原样透传。
+    assert_eq!(encoded["temperature"], 0.2);
+    assert_eq!(encoded["top_p"], 0.9);
+    assert_eq!(encoded["parallel_tool_calls"], false);
+    assert_eq!(encoded["stop"][0], "\n\n");
+    // 无 Responses 等价物的客户端默认参数丢弃并留痕，不再让整段请求 400。
+    for dropped in ["presence_penalty", "frequency_penalty", "seed", "user"] {
+        assert!(encoded.get(dropped).is_none(), "{dropped} must be dropped");
+        assert!(context.normalized.contains(&format!("/{dropped}")));
+    }
+    // `n: 1` 是默认值，静默放行；n > 1 见下一个用例。
+    assert!(context.normalized.contains(&"/n".to_string()));
+}
+
+#[test]
+fn chat_n_greater_than_one_is_rejected() {
+    let error = encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "n": 2}),
+        "m",
+    )
+    .unwrap_err();
+    assert!(error.json_pointers.contains(&"/n".to_string()));
+}
+
+#[test]
+fn chat_n_accepts_only_positive_integer_one() {
+    for value in [
+        serde_json::json!(0),
+        serde_json::json!(-1),
+        serde_json::json!(1.0),
+        serde_json::json!("1"),
+        serde_json::Value::Null,
+    ] {
+        let error = encode_chat_to_responses(
+            &serde_json::json!({"model": "m", "messages": [], "n": value}),
+            "m",
+        )
+        .unwrap_err();
+        assert!(error.json_pointers.contains(&"/n".to_string()));
+    }
+    assert!(encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "n": 1}),
+        "m"
+    )
+    .is_ok());
+}
+
+#[test]
+fn chat_stop_rejects_non_string_array_elements() {
+    for value in [serde_json::json!(["END", 1]), serde_json::json!([null])] {
+        let error = encode_chat_to_responses(
+            &serde_json::json!({"model": "m", "messages": [], "stop": value}),
+            "m",
+        )
+        .unwrap_err();
+        assert!(error
+            .json_pointers
+            .iter()
+            .any(|pointer| pointer.starts_with("/stop")));
+    }
+}
+
+#[test]
+fn chat_sampling_field_types_are_validated() {
+    let error = encode_chat_to_responses(
+        &serde_json::json!({"model": "m", "messages": [], "temperature": "hot"}),
+        "m",
+    )
+    .unwrap_err();
+    assert!(error.json_pointers.contains(&"/temperature".to_string()));
+}
+
+#[test]
 fn chat_gpt5_options_map_or_drop_for_responses_backend() {
     let (encoded, context) = encode_chat_to_responses(
         &serde_json::json!({
@@ -425,16 +579,38 @@ fn chat_gpt5_options_map_or_drop_for_responses_backend() {
     .unwrap();
 
     assert_eq!(encoded["model"], "gpt-5.5");
-    assert!(encoded.get("reasoning").is_none());
+    assert_eq!(encoded["reasoning"], serde_json::json!({"effort": "high"}));
     assert!(encoded.get("text").is_none());
     assert!(encoded.get("max_output_tokens").is_none());
     assert!(encoded.get("stream_options").is_none());
     assert!(context.normalized.contains(&"/max_tokens".to_string()));
     assert!(context.normalized.contains(&"/stream_options".to_string()));
-    assert!(context
+    assert!(!context
         .normalized
         .contains(&"/reasoning_effort".to_string()));
     assert!(context.normalized.contains(&"/verbosity".to_string()));
+}
+
+#[test]
+fn chat_reasoning_preferences_reach_responses_without_changing_defaults() {
+    let mut request = serde_json::json!({
+        "model": "public-alias",
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+    let (default_body, _) = encode_chat_to_responses(&request, "mapped-model").unwrap();
+    assert!(default_body.get("reasoning").is_none());
+    for effort in ["none", "low", "medium", "high"] {
+        request["reasoning_effort"] = serde_json::json!(effort);
+        let (encoded, context) = encode_chat_to_responses(&request, "mapped-model").unwrap();
+        assert_eq!(encoded["reasoning"]["effort"], effort);
+        assert_eq!(encoded["model"], "mapped-model");
+        assert!(!context.normalized.contains(&"/reasoning_effort".to_owned()));
+    }
+    request["reasoning_effort"] = serde_json::json!(false);
+    let error = encode_chat_to_responses(&request, "mapped-model").unwrap_err();
+    assert!(error
+        .json_pointers
+        .contains(&"/reasoning_effort".to_owned()));
 }
 
 #[test]

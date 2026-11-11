@@ -4,7 +4,11 @@
 //! place that knows the fixed Codex backend paths and response-header quota wire
 //! format; it never accepts a caller-supplied backend URL in production.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+    time::{Duration as StdDuration, Instant},
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, TimeZone, Utc};
@@ -15,26 +19,64 @@ use super::{
     codex_login::{AuthFileFormat, CodexLogin},
     LoginResult, LoginRuntime, MultiImportResult, Provider, ProviderError, ProviderKind,
     ProviderLoginContext, ProviderModels, ProviderPayload, ProviderRequest, RefreshedPayload,
+    ResetCredit, ResetCreditCode, ResetCreditOutcome, ResetCreditsSnapshot,
 };
 use crate::db::models::{AuthAccount, ModelState, QuotaLimit, QuotaState, QuotaWindow};
 
 pub const CODEX_BACKEND_BASE: &str = "https://chatgpt.com/backend-api/codex";
 const RESPONSES_PATH: &str = "responses";
 const MODELS_PATH: &str = "models";
-// `/models` is a Codex client endpoint, not a DaMaoAPI endpoint.  The backend
-// filters its catalog by this value, so using our own application version (for
-// example `0.1.7`) can legitimately produce an empty model list.
-const CODEX_CLIENT_VERSION: &str = "0.147.0";
+const RESET_CREDITS_PATH: &str = "wham/rate-limit-reset-credits";
+const RESET_CONSUME_PATH: &str = "wham/rate-limit-reset-credits/consume";
+// ChatGPT 按 client_version 门控 Codex 模型目录（`/models` 是 Codex 客户端
+// 端点，用我们自己的应用版本会合法地拿到空模型列表）。0.147.0 只下发
+// GPT-5.6，0.156.1 起包含 GPT-6 系列。PR #148 起该值不再写死，默认
+// `CODEX_DEFAULT_CLIENT_VERSION`，并按 `CODEX_VERSION_REFRESH_INTERVAL`
+// 定期从 npm registry 拉取最新 Codex CLI 版本（可用
+// DAMAOAPI_CODEX_CLIENT_VERSION 环境变量覆盖）。
+const CODEX_DEFAULT_CLIENT_VERSION: &str = "0.162.0";
+const CODEX_VERSION_METADATA_URL: &str = "https://registry.npmjs.org/@openai%2fcodex/latest";
+const CODEX_VERSION_REFRESH_INTERVAL: StdDuration = StdDuration::from_secs(6 * 60 * 60);
 const CODEX_ORIGINATOR: &str = "codex_cli_rs";
-const CODEX_USER_AGENT: &str = "codex_cli_rs/0.147.0";
+
+#[derive(Debug, Clone)]
+struct ClientVersionCache {
+    version: String,
+    checked_at: Option<Instant>,
+}
+
+fn codex_user_agent(client_version: &str) -> String {
+    format!("{CODEX_ORIGINATOR}/{client_version}")
+}
+
+fn normalize_client_version(value: &str) -> Option<String> {
+    let mut parts = value.trim().split(['.', '-']);
+    let major = parts.next()?.parse::<u64>().ok()?;
+    let minor = parts.next()?.parse::<u64>().ok()?;
+    let patch = parts.next()?.parse::<u64>().ok()?;
+    Some(format!("{major}.{minor}.{patch}"))
+}
+
+fn compare_client_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let parse = |value: &str| {
+        value
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    parse(left).cmp(&parse(right))
+}
 
 /// The sole Codex provider implementation.  `with_backend_base` is intentionally
 /// test-only so production calls cannot be redirected by frontend/downstream data.
 #[derive(Clone)]
 pub struct CodexProvider {
+    #[cfg(test)]
     client: reqwest::Client,
     backend_base: String,
     login: CodexLogin,
+    client_version: Arc<RwLock<ClientVersionCache>>,
+    client_version_refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Default for CodexProvider {
@@ -45,24 +87,131 @@ impl Default for CodexProvider {
 
 impl CodexProvider {
     pub fn new() -> Self {
+        let version = std::env::var("DAMAOAPI_CODEX_CLIENT_VERSION")
+            .ok()
+            .and_then(|value| normalize_client_version(&value))
+            .unwrap_or_else(|| CODEX_DEFAULT_CLIENT_VERSION.to_owned());
         Self {
+            #[cfg(test)]
             client: backend_client(),
             backend_base: CODEX_BACKEND_BASE.to_owned(),
             login: CodexLogin::new(),
+            client_version: Arc::new(RwLock::new(ClientVersionCache {
+                version,
+                checked_at: None,
+            })),
+            client_version_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     #[cfg(test)]
     fn with_endpoints(backend_base: String, login: CodexLogin) -> Self {
+        let version = std::env::var("DAMAOAPI_CODEX_CLIENT_VERSION")
+            .ok()
+            .and_then(|value| normalize_client_version(&value))
+            .unwrap_or_else(|| CODEX_DEFAULT_CLIENT_VERSION.to_owned());
         Self {
+            #[cfg(test)]
             client: backend_client(),
             backend_base: backend_base.trim_end_matches('/').to_owned(),
             login,
+            client_version: Arc::new(RwLock::new(ClientVersionCache {
+                version,
+                checked_at: None,
+            })),
+            client_version_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     fn endpoint(&self, path: &str) -> String {
         format!("{}/{path}", self.backend_base.trim_end_matches('/'))
+    }
+
+    fn backend_root_endpoint(&self, path: &str) -> String {
+        let base = self.backend_base.trim_end_matches('/');
+        let root = base.strip_suffix("/codex").unwrap_or(base);
+        format!("{root}/{path}")
+    }
+
+    fn current_client_version(&self) -> String {
+        self.client_version
+            .read()
+            .map(|cache| cache.version.clone())
+            .unwrap_or_else(|_| CODEX_DEFAULT_CLIENT_VERSION.to_owned())
+    }
+
+    fn set_client_version(&self, version: String, checked_at: Option<Instant>) {
+        if let Ok(mut cache) = self.client_version.write() {
+            cache.version = version;
+            cache.checked_at = checked_at;
+        }
+    }
+
+    async fn refresh_client_version(&self) -> String {
+        if let Some(version) = std::env::var("DAMAOAPI_CODEX_CLIENT_VERSION")
+            .ok()
+            .and_then(|value| normalize_client_version(&value))
+        {
+            self.set_client_version(version.clone(), None);
+            return version;
+        }
+
+        if self.backend_base != CODEX_BACKEND_BASE {
+            return self.current_client_version();
+        }
+
+        let now = Instant::now();
+        let fresh = self
+            .client_version
+            .read()
+            .ok()
+            .and_then(|cache| cache.checked_at)
+            .is_some_and(|checked_at| {
+                now.duration_since(checked_at) < CODEX_VERSION_REFRESH_INTERVAL
+            });
+        if fresh {
+            return self.current_client_version();
+        }
+
+        let _guard = self.client_version_refresh_lock.lock().await;
+        let now = Instant::now();
+        let fresh = self
+            .client_version
+            .read()
+            .ok()
+            .and_then(|cache| cache.checked_at)
+            .is_some_and(|checked_at| {
+                now.duration_since(checked_at) < CODEX_VERSION_REFRESH_INTERVAL
+            });
+        if fresh {
+            return self.current_client_version();
+        }
+
+        let latest = match self
+            .blocking_client()
+            .get(CODEX_VERSION_METADATA_URL)
+            .timeout(StdDuration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                response.json::<Value>().await.ok().and_then(|body| {
+                    body.get("version")
+                        .and_then(Value::as_str)
+                        .and_then(normalize_client_version)
+                })
+            }
+            _ => None,
+        };
+
+        let version = latest
+            .filter(|candidate| {
+                compare_client_versions(candidate, &self.current_client_version())
+                    == std::cmp::Ordering::Greater
+            })
+            .map_or_else(|| self.current_client_version(), |candidate| candidate);
+        self.set_client_version(version.clone(), Some(Instant::now()));
+        version
     }
 
     /// The dedicated quota-status endpoint lives at the `backend-api` root, not
@@ -92,17 +241,125 @@ impl CodexProvider {
             header::HeaderValue::from_static("application/json"),
         );
         let response = self
-            .client
+            .blocking_client()
             .get(self.usage_endpoint())
             .headers(headers)
             .send()
             .await
-            .map_err(|_| ProviderError::Retryable)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    error = %error,
+                    proxy_configured = crate::adaptor::global_proxy_url().is_some(),
+                    "Codex quota request transport failed"
+                );
+                ProviderError::Retryable
+            })?;
         if !response.status().is_success() {
             return Ok(None);
         }
         let body: Value = response.json().await.map_err(|_| ProviderError::Protocol)?;
         Ok(quota_from_usage_payload(&body))
+    }
+
+    async fn list_reset_credits_inner(
+        &self,
+        account: &crate::db::models::AuthAccount,
+        payload: &ProviderPayload,
+    ) -> Result<ResetCreditsSnapshot, ProviderError> {
+        let mut headers = self.auth_headers(payload, account, &header::HeaderMap::new())?;
+        headers.insert(
+            header::ACCEPT,
+            header::HeaderValue::from_static("application/json"),
+        );
+        let endpoint = self.backend_root_endpoint(RESET_CREDITS_PATH);
+        let response = loop {
+            match self
+                .blocking_client()
+                .get(&endpoint)
+                .headers(headers.clone())
+                .send()
+                .await
+            {
+                Ok(response) => break response,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        proxy_configured = crate::adaptor::global_proxy_url().is_some(),
+                        "Codex reset-credit list transport failed; retrying once"
+                    );
+                    // 读取卡列表是幂等 GET。代理偶发断开时只允许一次
+                    // 只读重试；消费 POST 的未知结果绝不走这条路径。
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    match self
+                        .blocking_client()
+                        .get(&endpoint)
+                        .headers(headers)
+                        .send()
+                        .await
+                    {
+                        Ok(response) => break response,
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                proxy_configured = crate::adaptor::global_proxy_url().is_some(),
+                                "Codex reset-credit list retry transport failed"
+                            );
+                            return Err(ProviderError::Retryable);
+                        }
+                    }
+                }
+            }
+        };
+        if !response.status().is_success() {
+            return Err(reset_http_error(response.status()));
+        }
+        let body: Value = response.json().await.map_err(|_| ProviderError::Protocol)?;
+        parse_reset_credits(&body)
+    }
+
+    async fn consume_reset_credit_inner(
+        &self,
+        account: &crate::db::models::AuthAccount,
+        payload: &ProviderPayload,
+        redeem_request_id: &str,
+        credit_id: &str,
+    ) -> Result<ResetCreditOutcome, ProviderError> {
+        if redeem_request_id.trim().is_empty() || credit_id.trim().is_empty() {
+            return Err(ProviderError::InvalidPayload);
+        }
+        let mut headers = self.auth_headers(payload, account, &header::HeaderMap::new())?;
+        headers.insert(
+            header::ACCEPT,
+            header::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
+        let body = serde_json::json!({
+            "redeem_request_id": redeem_request_id,
+            "credit_id": credit_id,
+        });
+        let response = self
+            .blocking_client()
+            .post(self.backend_root_endpoint(RESET_CONSUME_PATH))
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    error = %error,
+                    proxy_configured = crate::adaptor::global_proxy_url().is_some(),
+                    "Codex reset-credit consume transport failed"
+                );
+                ProviderError::Retryable
+            })?;
+        if !response.status().is_success() {
+            return Err(reset_http_error(response.status()));
+        }
+        let body: Value = response.json().await.map_err(|_| ProviderError::Protocol)?;
+        parse_reset_outcome(&body)
     }
 
     fn auth_headers(
@@ -129,7 +386,8 @@ impl CodexProvider {
         );
         headers.insert(
             header::USER_AGENT,
-            header::HeaderValue::from_static(CODEX_USER_AGENT),
+            header::HeaderValue::from_str(&codex_user_agent(&self.current_client_version()))
+                .map_err(|_| ProviderError::InvalidPayload)?,
         );
         headers.insert(
             header::HeaderName::from_static("originator"),
@@ -157,6 +415,31 @@ impl CodexProvider {
             );
         }
         Ok(headers)
+    }
+
+    /// 账号请求复用项目已有的代理感知客户端：流式响应走
+    /// `streaming_client`，额度、模型和重置卡等短请求走
+    /// `blocking_client`。代理地址始终从设置页同步的全局状态读取。
+    fn streaming_client(&self) -> reqwest::Client {
+        #[cfg(test)]
+        {
+            return self.client.clone();
+        }
+        #[cfg(not(test))]
+        {
+            crate::adaptor::streaming_client(crate::adaptor::global_proxy_url().as_deref())
+        }
+    }
+
+    fn blocking_client(&self) -> reqwest::Client {
+        #[cfg(test)]
+        {
+            return self.client.clone();
+        }
+        #[cfg(not(test))]
+        {
+            crate::adaptor::blocking_client(30, crate::adaptor::global_proxy_url().as_deref())
+        }
     }
 }
 
@@ -224,7 +507,7 @@ impl Provider for CodexProvider {
     ) -> Result<reqwest::Response, ProviderError> {
         let body = validate_backend_request(request.body)?;
         let headers = self.auth_headers(request.payload, request.account, request.headers)?;
-        self.client
+        self.streaming_client()
             .post(self.endpoint(RESPONSES_PATH))
             .headers(headers)
             .json(&body)
@@ -238,6 +521,7 @@ impl Provider for CodexProvider {
         account: &AuthAccount,
         payload: &ProviderPayload,
     ) -> Result<ProviderModels, ProviderError> {
+        let client_version = self.refresh_client_version().await;
         let headers = self.auth_headers(payload, account, &header::HeaderMap::new())?;
         let mut headers = headers;
         headers.insert(
@@ -246,14 +530,15 @@ impl Provider for CodexProvider {
         );
         headers.insert(
             header::USER_AGENT,
-            header::HeaderValue::from_static(CODEX_USER_AGENT),
+            header::HeaderValue::from_str(&codex_user_agent(&client_version))
+                .map_err(|_| ProviderError::InvalidPayload)?,
         );
         let response = self
-            .client
+            .blocking_client()
             .get(self.endpoint(MODELS_PATH))
             // This is part of Codex's native `/models` request contract.  The
             // backend uses it to select models compatible with the client.
-            .query(&[("client_version", CODEX_CLIENT_VERSION)])
+            .query(&[("client_version", client_version)])
             .headers(headers)
             .send()
             .await
@@ -304,8 +589,28 @@ impl Provider for CodexProvider {
     ) -> Result<Option<QuotaState>, ProviderError> {
         self.fetch_quota_inner(account, payload).await
     }
+
+    async fn list_reset_credits(
+        &self,
+        account: &AuthAccount,
+        payload: &ProviderPayload,
+    ) -> Result<ResetCreditsSnapshot, ProviderError> {
+        self.list_reset_credits_inner(account, payload).await
+    }
+
+    async fn consume_reset_credit(
+        &self,
+        account: &AuthAccount,
+        payload: &ProviderPayload,
+        redeem_request_id: &str,
+        credit_id: &str,
+    ) -> Result<ResetCreditOutcome, ProviderError> {
+        self.consume_reset_credit_inner(account, payload, redeem_request_id, credit_id)
+            .await
+    }
 }
 
+#[cfg(test)]
 fn backend_client() -> reqwest::Client {
     // Disabling all optional content encodings keeps this adapter from adding a
     // request content coding implicitly.
@@ -315,6 +620,114 @@ fn backend_client() -> reqwest::Client {
         .no_deflate()
         .build()
         .expect("reqwest client construction must not fail")
+}
+
+fn reset_http_error(status: StatusCode) -> ProviderError {
+    match status {
+        StatusCode::UNAUTHORIZED => ProviderError::Unauthorized,
+        StatusCode::FORBIDDEN => ProviderError::PermissionDenied,
+        StatusCode::TOO_MANY_REQUESTS
+        | StatusCode::BAD_GATEWAY
+        | StatusCode::SERVICE_UNAVAILABLE
+        | StatusCode::GATEWAY_TIMEOUT => ProviderError::Retryable,
+        StatusCode::NOT_FOUND => ProviderError::UnsupportedFeatures {
+            pointer: "/reset_credits".into(),
+        },
+        _ if status.is_server_error() => ProviderError::Retryable,
+        _ => ProviderError::Protocol,
+    }
+}
+
+fn parse_reset_credits(body: &Value) -> Result<ResetCreditsSnapshot, ProviderError> {
+    let credits = body
+        .get("credits")
+        .or_else(|| body.get("reset_credits"))
+        .and_then(Value::as_array)
+        .ok_or(ProviderError::Protocol)?
+        .iter()
+        .filter_map(parse_reset_credit)
+        .collect::<Vec<_>>();
+    let available_count = body
+        .get("available_count")
+        .or_else(|| body.get("availableCount"))
+        .and_then(Value::as_i64);
+    Ok(ResetCreditsSnapshot {
+        available_count,
+        credits,
+    })
+}
+
+fn parse_reset_credit(value: &Value) -> Option<ResetCredit> {
+    let object = value.as_object()?;
+    let id = object
+        .get("id")
+        .or_else(|| object.get("credit_id"))
+        .or_else(|| object.get("creditId"))
+        .and_then(Value::as_str)?
+        .to_owned();
+    let timestamp = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            object.get(*key).and_then(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| value.as_i64().map(|number| number.to_string()))
+            })
+        })
+    };
+    Some(ResetCredit {
+        id,
+        reset_type: object
+            .get("reset_type")
+            .or_else(|| object.get("type"))
+            .and_then(Value::as_str)
+            .unwrap_or("codex_rate_limits")
+            .to_owned(),
+        status: object
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("available")
+            .to_owned(),
+        granted_at: timestamp(&["granted_at", "grantedAt"]),
+        expires_at: timestamp(&["expires_at", "expiresAt"]),
+        title: object
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        description: object
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn parse_reset_outcome(body: &Value) -> Result<ResetCreditOutcome, ProviderError> {
+    let code = body
+        .get("code")
+        .or_else(|| body.get("result"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase)
+        .ok_or(ProviderError::Protocol)?;
+    let code = match code.as_str() {
+        "reset" => ResetCreditCode::Reset,
+        "nothing_to_reset" => ResetCreditCode::NothingToReset,
+        "no_credit" => ResetCreditCode::NoCredit,
+        "already_redeemed" => ResetCreditCode::AlreadyRedeemed,
+        _ => return Err(ProviderError::Protocol),
+    };
+    let windows_reset = body
+        .get("windows_reset")
+        .or_else(|| body.get("windowsReset"))
+        .and_then(value_as_i64)
+        .unwrap_or_default();
+    Ok(ResetCreditOutcome {
+        code,
+        windows_reset,
+    })
 }
 
 fn bearer(access_token: &str) -> Result<header::HeaderValue, ProviderError> {
@@ -643,7 +1056,7 @@ fn parse_reset_at(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
     };
 
@@ -665,9 +1078,12 @@ mod tests {
     struct MockState {
         hits: Arc<AtomicUsize>,
         usage_hits: Arc<AtomicUsize>,
+        reset_hits: Arc<AtomicUsize>,
+        consume_hits: Arc<AtomicUsize>,
         refreshes: Arc<AtomicUsize>,
         requests: Arc<Mutex<Vec<(HeaderMap, Value)>>>,
         model_queries: Arc<Mutex<Vec<Option<String>>>>,
+        version_gated_models: Arc<AtomicBool>,
         statuses: Arc<Mutex<Vec<StatusCode>>>,
         models_status: Arc<Mutex<StatusCode>>,
     }
@@ -693,11 +1109,8 @@ mod tests {
         headers: HeaderMap,
     ) -> impl IntoResponse {
         let status = *state.models_status.lock().await;
-        state
-            .model_queries
-            .lock()
-            .await
-            .push(uri.query().map(str::to_owned));
+        let query = uri.query().map(str::to_owned);
+        state.model_queries.lock().await.push(query.clone());
         state
             .requests
             .lock()
@@ -705,7 +1118,23 @@ mod tests {
             .push((headers, serde_json::json!({})));
         // This is the native Codex schema: model identity is `slug`, not the
         // OpenAI-compatible `data[].id` shape.
-        (status, Json(json!({"models": [{"slug": "gpt-test"}]})))
+        let slug = if state.version_gated_models.load(Ordering::SeqCst) {
+            // 真实上游按 client_version 门控模型目录：0.147.0 只返回 GPT-5.6，
+            // 0.156.1 起才会下发 GPT-6。
+            let version = query
+                .as_deref()
+                .and_then(|value| value.strip_prefix("client_version="))
+                .and_then(normalize_client_version)
+                .unwrap_or_else(|| "0.0.0".into());
+            if compare_client_versions(&version, "0.156.1") != std::cmp::Ordering::Less {
+                "gpt-6-sol"
+            } else {
+                "gpt-5.6-sol"
+            }
+        } else {
+            "gpt-test"
+        };
+        (status, Json(json!({"models": [{"slug": slug}]})))
     }
 
     async fn refresh_token(State(state): State<MockState>) -> impl IntoResponse {
@@ -740,6 +1169,42 @@ mod tests {
         Json(json!({"error": "rate limited"}))
     }
 
+    async fn reset_credits(
+        State(state): State<MockState>,
+        headers: HeaderMap,
+    ) -> impl IntoResponse {
+        state.reset_hits.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(headers[header::AUTHORIZATION], "Bearer fixture-access");
+        assert_eq!(headers["chatgpt-account-id"], "remote");
+        Json(json!({
+            "available_count": 1,
+            "credits": [{
+                "id": "credit-fixture",
+                "reset_type": "codex_rate_limits",
+                "status": "available",
+                "granted_at": 1780000000,
+                "expires_at": 1790000000,
+                "title": "Codex reset",
+                "description": "fixture"
+            }]
+        }))
+    }
+
+    async fn consume_reset(
+        State(state): State<MockState>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> impl IntoResponse {
+        state.consume_hits.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(headers[header::AUTHORIZATION], "Bearer fixture-access");
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["credit_id"], "credit-fixture");
+        assert!(body["redeem_request_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        Json(json!({"code": "reset", "windows_reset": 2}))
+    }
+
     async fn provider(statuses: Vec<StatusCode>) -> (CodexProvider, MockState) {
         let state = MockState {
             statuses: Arc::new(Mutex::new(statuses)),
@@ -749,6 +1214,14 @@ mod tests {
             .route("/backend-api/codex/responses", post(responses))
             .route("/backend-api/codex/models", get(models))
             .route("/backend-api/wham/usage", get(usage))
+            .route(
+                "/backend-api/wham/rate-limit-reset-credits",
+                get(reset_credits),
+            )
+            .route(
+                "/backend-api/wham/rate-limit-reset-credits/consume",
+                post(consume_reset),
+            )
             .route("/oauth/token", post(refresh_token))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -782,6 +1255,7 @@ mod tests {
             quota_json: None,
             model_states_json: "{\"version\":1,\"models\":[]}".into(),
             model_mapping_json: "{}".into(),
+            model_mapping_disabled: "[]".into(),
             attributes_json: json!({"actor_authorization":"trusted-actor"}).to_string(),
             payload_json: "{}".into(),
             last_refreshed_at: None,
@@ -954,6 +1428,88 @@ mod tests {
     }
 
     #[test]
+    fn chat_reasoning_controls_survive_codec_and_codex_validation() {
+        for effort in [
+            None,
+            Some("none"),
+            Some("low"),
+            Some("medium"),
+            Some("high"),
+        ] {
+            let mut chat = json!({
+                "model": "public-alias",
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            if let Some(effort) = effort {
+                chat["reasoning_effort"] = json!(effort);
+            }
+            let (encoded, _) = crate::protocol::codec::responses_codec::encode_chat_to_responses(
+                &chat,
+                "mapped-model",
+            )
+            .unwrap();
+            let body = validate_backend_request(&encoded).unwrap();
+            assert_eq!(body["model"], "mapped-model");
+            if let Some(effort) = effort {
+                assert_eq!(body["reasoning"]["effort"], effort);
+            } else {
+                assert!(body.get("reasoning").is_none());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_reasoning_controls_reach_mock_codex_http_backend() {
+        let (provider, state) = provider(vec![]).await;
+        let account = account();
+        let payload = payload();
+        let headers = HeaderMap::new();
+        for effort in [
+            None,
+            Some("none"),
+            Some("low"),
+            Some("medium"),
+            Some("high"),
+        ] {
+            let mut chat = json!({
+                "model": "public-alias",
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            if let Some(effort) = effort {
+                chat["reasoning_effort"] = json!(effort);
+            }
+            let (encoded, _) = crate::protocol::codec::responses_codec::encode_chat_to_responses(
+                &chat,
+                "mapped-model",
+            )
+            .unwrap();
+            provider
+                .outbound(ProviderRequest {
+                    account: &account,
+                    payload: &payload,
+                    body: &encoded,
+                    headers: &headers,
+                    is_stream: true,
+                    upstream_protocol: "responses",
+                    upstream_endpoint: "responses",
+                })
+                .await
+                .unwrap();
+        }
+        let requests = state.requests.lock().await;
+        assert_eq!(requests.len(), 5);
+        assert!(requests[0].1.get("reasoning").is_none());
+        for (request, effort) in requests
+            .iter()
+            .skip(1)
+            .zip(["none", "low", "medium", "high"])
+        {
+            assert_eq!(request.1["reasoning"]["effort"], effort);
+            assert_eq!(request.1["model"], "mapped-model");
+        }
+    }
+
+    #[test]
     fn backend_request_discards_null_unknown_fields() {
         let body = validate_backend_request(&json!({
             "model": "gpt-test",
@@ -1086,13 +1642,59 @@ mod tests {
         assert_eq!(headers[header::AUTHORIZATION], "Bearer fixture-access");
         assert_eq!(headers["x-openai-actor-authorization"], "trusted-actor");
         assert_eq!(headers[header::ACCEPT], "application/json");
-        assert_eq!(headers[header::USER_AGENT], CODEX_USER_AGENT);
+        assert_eq!(
+            headers[header::USER_AGENT],
+            codex_user_agent(&provider.current_client_version())
+        );
         assert_eq!(headers["originator"], CODEX_ORIGINATOR);
         assert_eq!(headers["chatgpt-account-id"], "remote");
         drop(requests);
         assert_eq!(
             state.model_queries.lock().await.as_slice(),
-            [Some(format!("client_version={CODEX_CLIENT_VERSION}"))]
+            [Some(format!(
+                "client_version={}",
+                provider.current_client_version()
+            ))]
+        );
+    }
+
+    #[tokio::test]
+    async fn current_client_version_unlocks_gpt6_catalog() {
+        let (provider, state) = provider(vec![]).await;
+        state.version_gated_models.store(true, Ordering::SeqCst);
+
+        let models = provider.list_models(&account(), &payload()).await.unwrap();
+
+        assert_eq!(models[0].id, "gpt-6-sol");
+    }
+
+    #[test]
+    fn client_version_is_normalized_to_three_numeric_parts() {
+        assert_eq!(
+            normalize_client_version(" 0.163.0 "),
+            Some("0.163.0".into())
+        );
+        assert_eq!(normalize_client_version("v0.163.0"), None);
+        assert_eq!(normalize_client_version("0.163"), None);
+        assert_eq!(
+            normalize_client_version("0.163.0-beta.1"),
+            Some("0.163.0".into())
+        );
+    }
+
+    #[test]
+    fn client_versions_are_compared_numerically() {
+        assert_eq!(
+            compare_client_versions("0.163.0", "0.162.99"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_client_versions("0.162.0", "0.162.0"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare_client_versions("0.9.0", "0.10.0"),
+            std::cmp::Ordering::Less
         );
     }
 
@@ -1462,5 +2064,53 @@ mod tests {
         // Weekly plus window normalized from seconds.
         assert_eq!(primary.window_minutes, Some(10_080));
         assert_eq!(primary.used_percent, Some(58.0));
+    }
+
+    #[tokio::test]
+    async fn reset_credit_contract_uses_fixed_paths_headers_and_body() {
+        let (provider, state) = provider(vec![]).await;
+        let account = account();
+        let payload = payload();
+        let snapshot = provider
+            .list_reset_credits(&account, &payload)
+            .await
+            .unwrap();
+        assert_eq!(state.reset_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.available_count, Some(1));
+        assert_eq!(snapshot.credits[0].id, "credit-fixture");
+        let outcome = provider
+            .consume_reset_credit(&account, &payload, "request-fixture", "credit-fixture")
+            .await
+            .unwrap();
+        assert_eq!(state.consume_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(outcome.code, ResetCreditCode::Reset);
+        assert_eq!(outcome.windows_reset, 2);
+    }
+
+    #[test]
+    fn reset_credit_unknown_code_fails_closed() {
+        assert!(matches!(
+            parse_reset_outcome(&json!({"code":"unexpected"})),
+            Err(ProviderError::Protocol)
+        ));
+    }
+
+    #[test]
+    fn reset_credit_timestamps_accept_wire_string_values() {
+        let snapshot = parse_reset_credits(&json!({
+            "available_count": 1,
+            "credits": [{
+                "id": "fixture",
+                "reset_type": "codex_rate_limits",
+                "status": "available",
+                "granted_at": "2026-09-01T00:00:00Z",
+                "expires_at": "2026-10-04T23:59:59Z"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            snapshot.credits[0].expires_at.as_deref(),
+            Some("2026-10-04T23:59:59Z")
+        );
     }
 }

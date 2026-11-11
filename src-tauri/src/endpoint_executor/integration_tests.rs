@@ -108,6 +108,7 @@ fn channel(
         last_probe_at: None,
         last_probe_ok: None,
         probe_latency_ms: None,
+        api_key_enabled: Some(1),
     }
 }
 
@@ -127,6 +128,7 @@ fn audited(
             model: model.to_string(),
             stream: false,
             trace_id: None,
+            client_name: None,
         },
         forward_json: body.clone(),
         sanitized_log_json: body,
@@ -951,6 +953,8 @@ mod codex_responses_anthropic {
             seen: Arc::new(Mutex::new(Vec::new())),
         };
         let app = Router::new()
+            // #147 起 anthropic native base 会自动补齐 /v1，mock 两种路径都要能应答。
+            .route("/v1/messages", post(messages))
             .route("/messages", post(messages))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1100,6 +1104,8 @@ mod codex_responses_anthropic {
             seen: Arc::new(Mutex::new(Vec::new())),
         };
         let app = Router::new()
+            // #147 起 anthropic native base 会自动补齐 /v1，mock 两种路径都要能应答。
+            .route("/v1/messages", post(messages))
             .route("/messages", post(messages))
             .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

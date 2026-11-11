@@ -631,6 +631,7 @@ mod tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -662,6 +663,7 @@ mod tests {
             })
             .to_string(),
             model_mapping_json: "{}".into(),
+            model_mapping_disabled: "[]".into(),
             attributes_json: "{}".into(),
             payload_json: "{}".into(),
             last_refreshed_at: None,
@@ -709,6 +711,7 @@ mod tests {
                 model: "m".into(),
                 stream: false,
                 trace_id: None,
+                client_name: None,
             },
             forward_json: json!({ "model": "m", "messages": [] }),
             sanitized_log_json: json!({ "model": "m", "messages": [] }),
@@ -738,6 +741,7 @@ mod tests {
                 model: "m".into(),
                 stream: false,
                 trace_id: None,
+                client_name: None,
             },
             forward_json: body.clone(),
             sanitized_log_json: body,
@@ -785,6 +789,7 @@ mod tests {
                 model: "m".into(),
                 stream,
                 trace_id: None,
+                client_name: None,
             },
             forward_json: body.clone(),
             sanitized_log_json: body,

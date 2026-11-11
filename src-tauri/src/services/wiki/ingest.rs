@@ -1776,7 +1776,7 @@ type: entity
         let (event_tx, _) = tokio::sync::broadcast::channel(16);
         let events = crate::server::event_bridge::EventSink::headless(event_tx);
         let settings = crate::settings_store::SettingsStore::file(
-            std::env::temp_dir().join(format!("waliapi-ingest-test-{}.json", uuid::Uuid::new_v4())),
+            std::env::temp_dir().join(format!("damaoapi-ingest-test-{}.json", uuid::Uuid::new_v4())),
         );
 
         // 先建真实项目（wiki_ingest_queue 对 project_id 有外键约束）
@@ -1899,10 +1899,10 @@ type: entity
     fn source_context_preserves_content_within_limit() {
         let sections = vec![ContentSection {
             heading: "Overview".to_string(),
-            content: "WaLiAPI Wiki".to_string(),
+            content: "DaMaoAPI Wiki".to_string(),
         }];
 
-        assert_eq!(build_source_context(&sections), "## Overview\nWaLiAPI Wiki");
+        assert_eq!(build_source_context(&sections), "## Overview\nDaMaoAPI Wiki");
     }
 
     #[test]

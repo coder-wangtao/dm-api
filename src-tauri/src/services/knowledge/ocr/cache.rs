@@ -93,7 +93,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "waliapi_ocr_cache_test_{}_{}",
+            "damaoapi_ocr_cache_test_{}_{}",
             tag,
             uuid::Uuid::new_v4()
         ));

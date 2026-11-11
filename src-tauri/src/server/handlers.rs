@@ -43,6 +43,32 @@ async fn audit_original(
     trace_id: Option<String>,
     shared: &SharedState,
 ) -> Result<security::gate::AuditedRequest, Response> {
+    audit_original_with_headers(
+        protocol,
+        endpoint,
+        original_json,
+        query,
+        trace_id,
+        shared,
+        None,
+    )
+    .await
+}
+
+/// `audit_original` 的带请求头变体：从下游请求头识别调用来源（迁移 047），
+/// 识别结果随 envelope 贯通到日志落账行。`headers` 为 `None` 时（内部调用）
+/// 跳过识别。
+#[allow(clippy::too_many_arguments)]
+async fn audit_original_with_headers(
+    protocol: security::gate::DownstreamProtocol,
+    endpoint: &str,
+    original_json: serde_json::Value,
+    query: Option<String>,
+    trace_id: Option<String>,
+    shared: &SharedState,
+    headers: Option<&HeaderMap>,
+) -> Result<security::gate::AuditedRequest, Response> {
+    let client_name = headers.and_then(crate::utils::client_name::detect_from_headers);
     let model = original_json
         .get("model")
         .and_then(|m| m.as_str())
@@ -60,8 +86,6 @@ async fn audit_original(
     } else {
         vec![]
     };
-    // 对原始 API 请求进行安全审计（Security Audit），在请求真正转发到下游模型之前，
-    // 检查请求是否符合安全策略，并根据检查结果决定是否放行
     match security::gate::gate_original(
         protocol,
         endpoint,
@@ -74,7 +98,12 @@ async fn audit_original(
         None,
         custom_rules,
     ) {
-        Ok(audited) => Ok(audited),
+        Ok(mut audited) => {
+            // 调用来源（迁移 047）：gate 不感知请求头，识别结果在此回填 envelope，
+            // 随 AuditedRequest 贯通到各日志落账点。
+            audited.envelope.client_name = client_name;
+            Ok(audited)
+        }
         Err(security::gate::SecurityGateError::ApprovalRequired { message }) => Err((
             StatusCode::CONFLICT,
             Json(serde_json::json!({
@@ -119,8 +148,6 @@ async fn audit_original(
 /// this file; folding them into a struct would be an interface change across a
 /// frozen handler surface, so the lint is scoped here.
 #[allow(clippy::too_many_arguments)]
-//根据功能开关、请求认证信息、可用渠道（Channel）和认证账号（Auth Account），
-// 决定当前 API 请求是否进入新的 RoutePlan 路由系统，并执行请求转发、重试、流式响应和日志记录。
 async fn maybe_route_plan(
     shared: &SharedState,
     repo: &std::sync::Arc<Repository>,
@@ -133,12 +160,10 @@ async fn maybe_route_plan(
     sanitized_log_body: &str,
     trace_id: Option<String>,
 ) -> Result<Option<Response>, Response> {
-    //代码读取系统功能开关
     let flags = feature_flags::read_feature_flags(&shared.state.settings);
     // Auth accounts are request-scoped route candidates. They force the mixed
     // RoutePlan rollout while the global Channel rollout flag is off; absent a
     // usable account, retain the legacy pure-Channel path unchanged.
-    //查询 Auth Accounts
     let accounts = repo
         .list_route_accounts(&crate::utils::time::now_iso())
         .await
@@ -195,15 +220,21 @@ async fn maybe_route_plan(
                 )
                 .await;
             }
-            return Ok(Some(
-                (
-                    StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY),
-                    Json(serde_json::json!({
-                        "error": { "message": e.message(), "type": "route_plan_error", "code": code }
-                    })),
-                )
-                    .into_response(),
-            ));
+            let mut response = (
+                StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY),
+                Json(serde_json::json!({
+                    "error": { "message": e.message(), "type": "route_plan_error", "code": code }
+                })),
+            )
+                .into_response();
+            if matches!(e, route_plan::PlanError::NoEndpointSupported(..)) {
+                response.extensions_mut().insert(
+                    crate::services::knowledge::model_client::GatewayFailureCode(
+                        "endpoint_not_configured",
+                    ),
+                );
+            }
+            return Ok(Some(response));
         }
     };
     // GAP-08：重试策略设置对主路径生效——映射为 RoutePlan 尝试预算（组内
@@ -245,6 +276,101 @@ async fn maybe_route_plan(
         )
         .await;
         Ok(Some(resp))
+    }
+}
+
+/// 知识库 API Key 调用直接进入完整路由授权，不使用内部身份或在授权前命中语义缓存。
+pub(crate) async fn handle_knowledge_model(
+    shared: &SharedState,
+    headers: &HeaderMap,
+    body: serde_json::Value,
+    endpoint: EndpointKind,
+) -> Response {
+    let repo = std::sync::Arc::new(Repository::new(shared.state.db.pool.clone()));
+    let token = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let key = match repo.get_api_key_by_key(token).await {
+        Ok(key) => key,
+        Err(error) if is_key_lookup_storage_error(&error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Key lookup failed").into_response()
+        }
+        Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
+    };
+    if key.quota_limit > 0 && key.quota_used >= key.quota_limit {
+        return (StatusCode::TOO_MANY_REQUESTS, "API key quota exceeded").into_response();
+    }
+    let (protocol, path, mode) = if endpoint == EndpointKind::Embeddings {
+        (
+            security::gate::DownstreamProtocol::Embeddings,
+            "/v1/embeddings",
+            "embedding",
+        )
+    } else {
+        (
+            security::gate::DownstreamProtocol::ChatCompletions,
+            "/v1/chat/completions",
+            "chat",
+        )
+    };
+    let trace_id = Some(crate::server::request_id::resolve(headers));
+    let audited = match audit_original_with_headers(
+        protocol,
+        path,
+        body,
+        None,
+        trace_id.clone(),
+        shared,
+        Some(headers),
+    )
+    .await
+    {
+        Ok(audited) => audited,
+        Err(response) => return response,
+    };
+    if matches!(audited.audit_result.action, security::SecurityAction::Block) {
+        log_security_block(
+            &repo,
+            &key.id,
+            &key.name,
+            audited.envelope.model.clone(),
+            mode,
+            false,
+            &audited.sanitized_log_json,
+            &audited.audit_result,
+            trace_id.clone(),
+            audited.envelope.client_name.clone(),
+        )
+        .await;
+        return (
+            StatusCode::UNAVAILABLE_FOR_LEGAL_REASONS,
+            "Security policy blocked the request",
+        )
+            .into_response();
+    }
+    let log_body = audited.sanitized_log_json.to_string();
+    match maybe_route_plan(
+        shared,
+        &repo,
+        &key,
+        &audited,
+        endpoint,
+        false,
+        mode,
+        &[],
+        &log_body,
+        trace_id,
+    )
+    .await
+    {
+        Ok(Some(response)) | Err(response) => response,
+        Ok(None) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Knowledge request requires authorized routing",
+        )
+            .into_response(),
     }
 }
 
@@ -345,6 +471,7 @@ mod auth_routeplan_rollout_tests {
             })
             .to_string(),
             model_mapping_json: "{}".into(),
+            model_mapping_disabled: "[]".into(),
             attributes_json: "{}".into(),
             payload_json: "{}".into(),
             last_refreshed_at: None,
@@ -425,6 +552,7 @@ async fn log_security_block(
     sanitized_log_json: &serde_json::Value,
     audit_result: &security::SecurityScanResult,
     trace_id: Option<String>,
+    client_name: Option<String>,
 ) {
     let blocked = crate::db::models::RequestLog {
         id: crate::utils::id::new_id(),
@@ -455,6 +583,7 @@ async fn log_security_block(
         blocked_reason: audit_result.blocked_reason.clone(),
         trace_id,
         // T09: blocked log — no route/upstream context (channel unknown).
+        client_name: client_name.clone(),
         ..Default::default()
     };
     let log_id = blocked.id.clone();
@@ -487,13 +616,11 @@ pub async fn handle_chat_completions(
     body: axum::body::Bytes,
 ) -> Response {
     let body_str = String::from_utf8_lossy(&body);
-    //转换后变成 JSON 字符串：
     let json: serde_json::Value = match serde_json::from_str(&body_str) {
         Ok(j) => j,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e)).into_response(),
     };
 
-    //是否为流式请求
     let is_stream = json
         .get("stream")
         .and_then(|s| s.as_bool())
@@ -518,7 +645,6 @@ pub async fn handle_chat_completions(
         Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid API key").into_response(),
     };
 
-    // quota_limit <= 0 表示不限；> 0 时检查已用量
     if key_record.quota_limit > 0 && key_record.quota_used >= key_record.quota_limit {
         // 配额拒绝是 Key 维度终态：429 + OpenAI JSON 错误体（与其他端点一致），
         // 不做渠道 failover（C-01）。
@@ -537,28 +663,26 @@ pub async fn handle_chat_completions(
     // Unified security audit gate — audits the ORIGINAL protocol JSON full
     // tree before any routing/codec.  Fail-closed (Confirm/budget) returns
     // before any upstream contact.
-    let audited = match audit_original(
+    let audited = match audit_original_with_headers(
         security::gate::DownstreamProtocol::ChatCompletions,
         "/v1/chat/completions",
         json.clone(),
         None,
         trace_id.clone(),
         &shared,
+        Some(&headers),
     )
     .await
     {
         Ok(audited) => audited,
         Err(response) => return response,
     };
-    //安全评分、风险等级、审计动作、摘要等。
     let audit_result = audited.audit_result.clone();
-    //经过安全处理后，实际准备转发给上游的 JSON。
     let forward_json = audited.forward_json.clone();
 
     // Never persist the raw request body.  Only the gate's sanitized log body
     // reaches the log layer; raw bytes are used solely for scanning, hashing
     // and length/parse forensics.
-    // 经过脱敏的日志 JSON，不直接保存原始请求内容。
     let request_body_str = serde_json::to_string(&audited.sanitized_log_json).unwrap_or_default();
 
     if matches!(audit_result.action, security::SecurityAction::Block) {
@@ -572,6 +696,7 @@ pub async fn handle_chat_completions(
             &audited.sanitized_log_json,
             &audit_result,
             trace_id.clone(),
+            audited.envelope.client_name.clone(),
         )
         .await;
         let err_body = serde_json::json!({"error": {"message": audit_result.summary, "type": "security_blocked", "code": "security.blocked"}});
@@ -668,6 +793,7 @@ pub async fn handle_chat_completions(
             request_body_str,
             audit_result,
             trace_id,
+            audited.envelope.client_name.clone(),
         )
         .await
     } else {
@@ -873,6 +999,7 @@ async fn handle_stream(
     request_body: String,
     security_result: security::SecurityScanResult,
     trace_id: Option<String>,
+    client_name: Option<String>,
 ) -> Response {
     let model = json
         .get("model")
@@ -915,6 +1042,7 @@ async fn handle_stream(
             sanitized: if security_result.sanitized { 1 } else { 0 },
             blocked_reason: security_result.blocked_reason.clone(),
             trace_id: trace_id.clone(),
+            client_name: client_name.clone(),
             ..Default::default()
         };
         let log_id = log.id.clone();
@@ -1196,6 +1324,7 @@ async fn handle_stream(
                         sanitized: if security_result_clone.sanitized { 1 } else { 0 },
                         blocked_reason: security_result_clone.blocked_reason.clone(),
                         trace_id: trace_id_clone,
+                    client_name: client_name.clone(),
                     ..Default::default()
                     };
                     let log_id = log.id.clone();
@@ -1246,6 +1375,7 @@ async fn handle_stream(
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
                     trace_id: trace_id.clone(),
+                    client_name: client_name.clone(),
                     ..Default::default()
                 };
                 let log_id = log.id.clone();
@@ -1492,6 +1622,8 @@ struct StreamLogContext {
     is_stream: bool,
     /// 请求关联键（X-Request-Id），随落账行写 trace_id。
     trace_id: Option<String>,
+    /// 调用来源（迁移 047）：下游接入软件友好名称。
+    client_name: Option<String>,
 }
 
 const MAX_NATIVE_SSE_RECORD_BYTES: usize = 64 * 1024;
@@ -1513,6 +1645,8 @@ struct NativeStreamFinalizer {
     is_stream: bool,
     /// 请求关联键（X-Request-Id），随 499/502 落账行写 trace_id。
     trace_id: Option<String>,
+    /// 调用来源（迁移 047）：下游接入软件友好名称。
+    client_name: Option<String>,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -1533,6 +1667,7 @@ impl NativeStreamFinalizer {
             scan_buffer,
             is_stream: ctx.is_stream,
             trace_id: ctx.trace_id.clone(),
+            client_name: ctx.client_name.clone(),
             done: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -1571,6 +1706,7 @@ impl NativeStreamFinalizer {
             Some("native upstream stream interrupted".to_string()),
             usage,
             self.trace_id.clone(),
+            self.client_name.clone(),
         )
         .await;
     }
@@ -1600,6 +1736,7 @@ impl Drop for NativeStreamFinalizer {
                 let is_stream = self.is_stream;
                 let usage = self.estimated_usage();
                 let trace_id = self.trace_id.clone();
+                let client_name = self.client_name.clone();
                 handle.spawn(async move {
                     record_anthropic_outcome(
                         repo,
@@ -1614,6 +1751,7 @@ impl Drop for NativeStreamFinalizer {
                         Some("client_cancelled".to_string()),
                         usage,
                         trace_id,
+                        client_name,
                     )
                     .await;
                 });
@@ -1868,7 +2006,7 @@ fn native_response(response: reqwest::Response, accounting: Option<StreamLogCont
                     non_sse_observed.clone()
                 };
                 scan_bytes_into(&mut merged_security, &scan_bytes, &context.security_settings);
-                record_anthropic_success(context.repo, &context.key, &context.channel, &context.model, context.upstream_model.clone(), &context.request, &merged_security, context.is_stream, usage, context.trace_id.clone()).await;
+                record_anthropic_success(context.repo, &context.key, &context.channel, &context.model, context.upstream_model.clone(), &context.request, &merged_security, context.is_stream, usage, context.trace_id.clone(), context.client_name.clone()).await;
             } else if let Some(f) = finalizer.as_ref() {
                 // 上游中断：502 行 + 已解析的部分用量（估算兜底同取消路径）。
                 let partial = {
@@ -2039,6 +2177,7 @@ async fn record_anthropic_outcome(
     error_message: Option<String>,
     usage: Option<(i64, i64, i64)>,
     trace_id: Option<String>,
+    client_name: Option<String>,
 ) {
     let (prompt_tokens, completion_tokens, cached_tokens) = usage.unwrap_or((0, 0, 0));
     let mut total_tokens = prompt_tokens + completion_tokens;
@@ -2102,6 +2241,7 @@ async fn record_anthropic_outcome(
         // model without a signature change that T06's restructure supersedes).
         downstream_protocol: Some("messages".to_string()),
         downstream_endpoint: Some("messages".to_string()),
+        client_name: client_name.clone(),
         ..Default::default()
     };
     let log_id = log.id.clone();
@@ -2133,6 +2273,7 @@ async fn record_anthropic_success(
     is_stream: bool,
     usage: Option<(i64, i64, i64)>,
     trace_id: Option<String>,
+    client_name: Option<String>,
 ) {
     record_anthropic_outcome(
         repo,
@@ -2147,6 +2288,7 @@ async fn record_anthropic_success(
         None,
         usage,
         trace_id,
+        client_name,
     )
     .await;
 }
@@ -2231,13 +2373,14 @@ pub async fn handle_messages(
     let query = uri.query().map(|s| s.to_string());
     // 请求关联键：X-Request-Id（兼容 Damao-Trace-Id，缺省生成 UUIDv4）。
     let trace_id = Some(crate::server::request_id::resolve(&headers));
-    let audited = match audit_original(
+    let audited = match audit_original_with_headers(
         security::gate::DownstreamProtocol::Messages,
         "/v1/messages",
         json.clone(),
         query.clone(),
         trace_id.clone(),
         &shared,
+        Some(&headers),
     )
     .await
     {
@@ -2261,6 +2404,7 @@ pub async fn handle_messages(
             security_result.blocked_reason.clone(),
             None,
             trace_id.clone(),
+            audited.envelope.client_name.clone(),
         )
         .await;
         return anthropic_error(
@@ -2372,6 +2516,7 @@ pub async fn handle_messages(
                                 false,
                                 usage,
                                 trace_id.clone(),
+                                audited.envelope.client_name.clone(),
                             )
                             .await;
                             let mut builder = Response::builder().status(status);
@@ -2405,6 +2550,7 @@ pub async fn handle_messages(
                             security_settings: audited.security_settings.clone(),
                             is_stream: stream,
                             trace_id: trace_id.clone(),
+                            client_name: audited.envelope.client_name.clone(),
                         }),
                     );
                 }
@@ -2436,6 +2582,7 @@ pub async fn handle_messages(
                                 Some(format!("Native upstream returned HTTP {status}")),
                                 None,
                                 trace_id.clone(),
+                                audited.envelope.client_name.clone(),
                             )
                             .await;
                             // An upstream 401/403 is a channel-credential
@@ -2471,6 +2618,7 @@ pub async fn handle_messages(
                         Some(last_error.clone()),
                         None,
                         trace_id.clone(),
+                        audited.envelope.client_name.clone(),
                     )
                     .await;
                 }
@@ -2508,6 +2656,7 @@ pub async fn handle_messages(
                         security_settings: audited.security_settings.clone(),
                         is_stream: true,
                         trace_id: trace_id.clone(),
+                        client_name: audited.envelope.client_name.clone(),
                     },
                 )
             }
@@ -2554,6 +2703,7 @@ pub async fn handle_messages(
                             false,
                             usage,
                             trace_id.clone(),
+                            audited.envelope.client_name.clone(),
                         )
                         .await;
                         (StatusCode::OK, Json(value)).into_response()
@@ -2582,6 +2732,7 @@ pub async fn handle_messages(
                             Some(message),
                             None,
                             trace_id.clone(),
+                            audited.envelope.client_name.clone(),
                         )
                         .await;
                         upstream_attempts = upstream_attempts.saturating_sub(1);
@@ -2621,6 +2772,7 @@ pub async fn handle_messages(
                             Some(last_error.clone()),
                             None,
                             trace_id.clone(),
+                            audited.envelope.client_name.clone(),
                         )
                         .await;
                         // openai_error_response already maps an upstream
@@ -2644,6 +2796,7 @@ pub async fn handle_messages(
                     Some(last_error.clone()),
                     None,
                     trace_id.clone(),
+                    audited.envelope.client_name.clone(),
                 )
                 .await;
             }
@@ -2669,6 +2822,7 @@ pub async fn handle_messages(
             Some(last_error.clone()),
             None,
             trace_id.clone(),
+            audited.envelope.client_name.clone(),
         )
         .await;
         return anthropic_error(StatusCode::BAD_REQUEST, "invalid_request_error", last_error);
@@ -2686,6 +2840,7 @@ pub async fn handle_messages(
         Some(last_error.clone()),
         None,
         trace_id.clone(),
+        audited.envelope.client_name.clone(),
     )
     .await;
     anthropic_error(
@@ -2722,7 +2877,7 @@ fn openai_sse_response(
                         failed = true;
                         let mut merged = accounting.security.clone();
                         scan_bytes_into(&mut merged, &scan_buffer.buf, &accounting.security_settings);
-                        record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(format!("OpenAI stream conversion failed: {message}")), None, accounting.trace_id.clone()).await;
+                        record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(format!("OpenAI stream conversion failed: {message}")), None, accounting.trace_id.clone(), accounting.client_name.clone()).await;
                         yield Ok::<_, std::io::Error>(bytes::Bytes::from(format!("event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{}}}}}\n\n", serde_json::to_string(&message).unwrap()).into_bytes()));
                         break;
                     }
@@ -2733,7 +2888,7 @@ fn openai_sse_response(
                     let message = format!("OpenAI stream interrupted: {error}");
                     let mut merged = accounting.security.clone();
                     scan_bytes_into(&mut merged, &scan_buffer.buf, &accounting.security_settings);
-                    record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(message.clone()), None, accounting.trace_id.clone()).await;
+                    record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(message.clone()), None, accounting.trace_id.clone(), accounting.client_name.clone()).await;
                     yield Ok::<_, std::io::Error>(bytes::Bytes::from(format!("event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{}}}}}\n\n", serde_json::to_string(&message).unwrap()).into_bytes()));
                     break;
                 }
@@ -2746,12 +2901,12 @@ fn openai_sse_response(
                     let usage = state.usage();
                     let mut merged = accounting.security.clone();
                     scan_bytes_into(&mut merged, &scan_buffer.buf, &accounting.security_settings);
-                    record_anthropic_success(accounting.repo, &accounting.key, &accounting.channel, &accounting.model, None, &accounting.request, &merged, true, Some(usage), accounting.trace_id.clone()).await;
+                    record_anthropic_success(accounting.repo, &accounting.key, &accounting.channel, &accounting.model, None, &accounting.request, &merged, true, Some(usage), accounting.trace_id.clone(), accounting.client_name.clone()).await;
                 },
                 Err(message) => {
                     let mut merged = accounting.security.clone();
                     scan_bytes_into(&mut merged, &scan_buffer.buf, &accounting.security_settings);
-                    record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(format!("OpenAI stream conversion failed: {message}")), None, accounting.trace_id.clone()).await;
+                    record_anthropic_outcome(accounting.repo.clone(), &accounting.key, Some(&accounting.channel), &accounting.model, None, &accounting.request, &merged, true, 502, Some(format!("OpenAI stream conversion failed: {message}")), None, accounting.trace_id.clone(), accounting.client_name.clone()).await;
                     yield Ok::<_, std::io::Error>(bytes::Bytes::from(format!("event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{}}}}}\n\n", serde_json::to_string(&message).unwrap()).into_bytes()))
                 },
             }
@@ -2825,13 +2980,14 @@ pub async fn handle_messages_count_tokens(
     // Unified security audit gate — audits the ORIGINAL Count Tokens JSON.
     let query = uri.query().map(|s| s.to_string());
     let trace_id = Some(crate::server::request_id::resolve(&headers));
-    let audited = match audit_original(
+    let audited = match audit_original_with_headers(
         security::gate::DownstreamProtocol::CountTokens,
         "/v1/messages/count_tokens",
         json.clone(),
         query.clone(),
         trace_id.clone(),
         &shared,
+        Some(&headers),
     )
     .await
     {
@@ -3114,13 +3270,14 @@ pub async fn handle_responses(
     // Unified security audit gate — audits the ORIGINAL Responses protocol
     // JSON full tree (built-in tools, image URLs, files, unknown blocks)
     // before any Responses→Chat conversion.
-    let audited = match audit_original(
+    let audited = match audit_original_with_headers(
         security::gate::DownstreamProtocol::Responses,
         "/v1/responses",
         json.clone(),
         None,
         trace_id.clone(),
         &shared,
+        Some(&headers),
     )
     .await
     {
@@ -3129,12 +3286,9 @@ pub async fn handle_responses(
     };
     let audit_result = audited.audit_result.clone();
     let forward_json = audited.forward_json.clone();
-    //把脱敏后的 JSON 转换成字符串。
     let request_body_str = serde_json::to_string(&audited.sanitized_log_json).unwrap_or_default();
 
     if matches!(audit_result.action, security::SecurityAction::Block) {
-        //如果审计结果是 Block，就直接阻止请求。
-        //记录安全阻断日志
         log_security_block(
             &repo,
             &key_record.id,
@@ -3145,6 +3299,7 @@ pub async fn handle_responses(
             &audited.sanitized_log_json,
             &audit_result,
             trace_id.clone(),
+            audited.envelope.client_name.clone(),
         )
         .await;
         let err_body = serde_json::json!({"error": {"message": audit_result.summary, "type": "security_blocked"}});
@@ -3161,7 +3316,6 @@ pub async fn handle_responses(
     // G1 native `/responses` passthrough (when `native_responses` is ON) first,
     // G2 explicit `responses_via_chat_v1` debt only.  The old unconditional
     // Responses→Chat conversion is removed from this path.
-    //这里过滤请求头，只保留允许转发的安全请求头。
     let safe_headers = crate::endpoint_executor::safe_request_headers(&headers);
     match maybe_route_plan(
         &shared,
@@ -3210,6 +3364,7 @@ pub async fn handle_responses(
             request_body_str,
             audit_result,
             trace_id,
+            audited.envelope.client_name.clone(),
         )
         .await
     } else {
@@ -3326,6 +3481,7 @@ async fn handle_responses_stream(
     request_body: String,
     security_result: security::SecurityScanResult,
     trace_id: Option<String>,
+    client_name: Option<String>,
 ) -> Response {
     // Security gate already ran on the ORIGINAL Responses JSON at the entry
     // handler; `request_body` is the gate's sanitized log body.
@@ -3362,6 +3518,7 @@ async fn handle_responses_stream(
             sanitized: if security_result.sanitized { 1 } else { 0 },
             blocked_reason: security_result.blocked_reason.clone(),
             trace_id: trace_id.clone(),
+            client_name: client_name.clone(),
             ..Default::default()
         };
         let log_id = log.id.clone();
@@ -3651,6 +3808,7 @@ async fn handle_responses_stream(
                         sanitized: if security_result_clone.sanitized { 1 } else { 0 },
                         blocked_reason: security_result_clone.blocked_reason.clone(),
                         trace_id: trace_id_clone,
+                    client_name: client_name.clone(),
                     ..Default::default()
                     };
                     let log_id = log.id.clone();
@@ -3699,6 +3857,7 @@ async fn handle_responses_stream(
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
                     trace_id: trace_id.clone(),
+                    client_name: client_name.clone(),
                     ..Default::default()
                 };
                 let log_id = log.id.clone();
@@ -3798,13 +3957,14 @@ pub async fn handle_embeddings(
         .to_string();
     let trace_id = Some(crate::server::request_id::resolve(&headers));
     // Unified security audit gate — audits the ORIGINAL Embeddings JSON.
-    let audited = match audit_original(
+    let audited = match audit_original_with_headers(
         security::gate::DownstreamProtocol::Embeddings,
         "/v1/embeddings",
         json.clone(),
         None,
         trace_id.clone(),
         &shared,
+        Some(&headers),
     )
     .await
     {
@@ -3826,6 +3986,7 @@ pub async fn handle_embeddings(
             &audited.sanitized_log_json,
             &security_result,
             trace_id.clone(),
+            audited.envelope.client_name.clone(),
         )
         .await;
         return (
@@ -3952,6 +4113,7 @@ pub async fn handle_embeddings(
                         sanitized: if security_result.sanitized { 1 } else { 0 },
                         blocked_reason: security_result.blocked_reason.clone(),
                         trace_id: trace_id.clone(),
+                        client_name: audited.envelope.client_name.clone(),
                         ..Default::default()
                     };
                     let log_id = log.id.clone();
@@ -4043,6 +4205,7 @@ pub async fn handle_embeddings(
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
                     trace_id: trace_id.clone(),
+                    client_name: audited.envelope.client_name.clone(),
                     ..Default::default()
                 };
                 let log_id = log.id.clone();
@@ -4097,6 +4260,7 @@ pub async fn handle_embeddings(
                     sanitized: if security_result.sanitized { 1 } else { 0 },
                     blocked_reason: security_result.blocked_reason.clone(),
                     trace_id: trace_id.clone(),
+                    client_name: audited.envelope.client_name.clone(),
                     ..Default::default()
                 };
                 let log_id = log.id.clone();
@@ -4257,24 +4421,68 @@ fn collect_auth_account_models(
                 }
             }
         }
-        if let Ok(mapping) = account.model_mapping() {
-            if let Some(obj) = mapping.as_object() {
-                for key in obj.keys() {
-                    if visibility
-                        .map(|rules| rules.model_allowed(key))
-                        .unwrap_or(true)
-                        && seen.insert(key.clone())
-                    {
-                        out.push(ConfigModel {
-                            id: key.clone(),
-                            owned_by: account.provider.clone(),
-                        });
-                    }
+        // Disabled mapping pairs (042) are excluded from the catalog.
+        let mapping = account.active_model_mapping();
+        if let Some(obj) = mapping.as_object() {
+            for key in obj.keys() {
+                if visibility
+                    .map(|rules| rules.model_allowed(key))
+                    .unwrap_or(true)
+                    && seen.insert(key.clone())
+                {
+                    out.push(ConfigModel {
+                        id: key.clone(),
+                        owned_by: account.provider.clone(),
+                    });
                 }
             }
         }
     }
     out
+}
+
+/// 共用 `/v1/models` 的可见模型目录，保留映射源名称及渠道、模型权限语义。
+fn collect_visible_models(
+    key: &crate::db::models::ApiKey,
+    channels: &[crate::db::models::Channel],
+    accounts: &[crate::db::models::AuthAccount],
+) -> Vec<ConfigModel> {
+    let visibility = ApiKeyVisibility::from(key);
+    let mut models = collect_config_models(channels, Some(&visibility));
+    let mut seen = models.iter().map(|model| model.id.clone()).collect();
+    models.extend(collect_auth_account_models(
+        accounts,
+        &mut seen,
+        Some(&visibility),
+    ));
+    models
+}
+
+/// RAG 使用非流式 Chat 问答；仅检查配置与路由能力，不探测上游或消费额度。
+pub(crate) fn collect_api_key_answer_models(
+    key: &crate::db::models::ApiKey,
+    channels: &[crate::db::models::Channel],
+    accounts: &[crate::db::models::AuthAccount],
+    flags: &feature_flags::FeatureFlags,
+) -> Vec<String> {
+    let mut rng = rand::rng();
+    collect_visible_models(key, channels, accounts)
+        .into_iter()
+        .filter(|model| {
+            route_plan::authorize_and_plan_with_accounts(
+                key,
+                &model.id,
+                EndpointKind::ChatCompletions,
+                channels,
+                accounts,
+                flags,
+                &serde_json::json!({"model": model.id}),
+                &mut rng,
+            )
+            .is_ok()
+        })
+        .map(|model| model.id)
+        .collect()
 }
 
 /// OpenAI `/v1/models` response body: `{"object":"list","data":[...]}`.
@@ -4402,18 +4610,7 @@ async fn list_models_impl(pool: SqlitePool, headers: &HeaderMap) -> Response {
             )
         }
     };
-    let visibility = ApiKeyVisibility::from(&key);
-    let mut seen = std::collections::HashSet::new();
-    let mut models = collect_config_models(&channels, Some(&visibility));
-    // Track channel-advertised IDs so auth-account duplicates are skipped.
-    for m in &models {
-        seen.insert(m.id.clone());
-    }
-    models.extend(collect_auth_account_models(
-        &accounts,
-        &mut seen,
-        Some(&visibility),
-    ));
+    let models = collect_visible_models(&key, &channels, &accounts);
     let body = if anthropic {
         anthropic_models_response(&models)
     } else {
@@ -4798,6 +4995,7 @@ mod list_models_tests {
             last_probe_at: None,
             last_probe_ok: None,
             probe_latency_ms: None,
+            api_key_enabled: Some(1),
         }
     }
 
@@ -4895,6 +5093,7 @@ mod list_models_tests {
             })
             .to_string(),
             model_mapping_json: mapping.to_string(),
+            model_mapping_disabled: "[]".into(),
             attributes_json: "{}".to_string(),
             payload_json: "{}".to_string(),
             last_refreshed_at: None,
@@ -4951,6 +5150,153 @@ mod list_models_tests {
         let models = collect_auth_account_models(&accounts, &mut seen, Some(&visibility));
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["gpt-5", "alias-auth"]);
+    }
+
+    #[test]
+    fn answer_models_share_catalog_permissions_aliases_and_dedup() {
+        let channels = vec![
+            channel(
+                "allowed",
+                "openai",
+                &["denied-model", "shared"],
+                serde_json::json!({"alias": "upstream-private"}),
+            ),
+            channel(
+                "denied",
+                "openai",
+                &["denied-channel-model"],
+                serde_json::json!({}),
+            ),
+            channel(
+                "unlisted",
+                "openai",
+                &["unlisted-model"],
+                serde_json::json!({}),
+            ),
+        ];
+        let accounts = vec![account(
+            "auth",
+            "codex",
+            &["shared", "gpt-5", "unlisted-auth-model"],
+            serde_json::json!({"auth-alias": "gpt-5"}),
+        )];
+        let key = key(
+            &["allowed", "denied"],
+            &["denied", "auth"],
+            &[
+                "denied-model",
+                "shared",
+                "alias",
+                "gpt-5",
+                "auth-alias",
+                "denied-channel-model",
+            ],
+            &["denied-model"],
+        );
+        assert_eq!(
+            collect_api_key_answer_models(
+                &key,
+                &channels,
+                &accounts,
+                &feature_flags::FeatureFlags::all_on()
+            ),
+            vec!["shared", "alias", "gpt-5", "auth-alias"]
+        );
+    }
+
+    #[test]
+    fn answer_models_exclude_embeddings_only_without_changing_public_catalog() {
+        let mut embeddings = channel(
+            "embedding",
+            "openai",
+            &["embedding-model"],
+            serde_json::json!({"vector-alias": "embedding-model"}),
+        );
+        embeddings.protocol = Some("openai".into());
+        embeddings.provider = Some("custom".into());
+        embeddings.native_base_url = Some("https://example.com/v1".into());
+        embeddings.native_endpoints = Some(serde_json::json!(["embeddings"]).to_string());
+        embeddings.identity_revision = 1;
+        let channels = vec![
+            embeddings,
+            channel("chat", "openai", &["answer-model"], serde_json::json!({})),
+            channel("claude", "claude", &["claude-model"], serde_json::json!({})),
+        ];
+        let key = key(&[], &[], &[], &[]);
+        assert_eq!(collect_visible_models(&key, &channels, &[]).len(), 4);
+        assert_eq!(
+            collect_api_key_answer_models(
+                &key,
+                &channels,
+                &[],
+                &feature_flags::FeatureFlags::all_on()
+            ),
+            vec!["answer-model", "claude-model"]
+        );
+    }
+
+    #[test]
+    fn answer_models_reject_disabled_expired_and_exhausted_keys() {
+        let channels = vec![channel("chat", "openai", &["model"], serde_json::json!({}))];
+        let flags = feature_flags::FeatureFlags::all_on();
+        let mut key = key(&[], &[], &[], &[]);
+        key.status = 0;
+        assert!(collect_api_key_answer_models(&key, &channels, &[], &flags).is_empty());
+        key.status = 1;
+        key.expires_at = Some("2020-01-01T00:00:00Z".into());
+        assert!(collect_api_key_answer_models(&key, &channels, &[], &flags).is_empty());
+        key.expires_at = None;
+        key.quota_limit = 100;
+        key.quota_used = 100;
+        assert!(collect_api_key_answer_models(&key, &channels, &[], &flags).is_empty());
+    }
+
+    #[test]
+    fn answer_models_exclude_unroutable_accounts_and_disabled_aliases() {
+        let mut channel = channel(
+            "chat",
+            "openai",
+            &["chat-model"],
+            serde_json::json!({"disabled-alias": "chat-model"}),
+        );
+        channel.model_mapping_disabled =
+            serde_json::json!([["disabled-alias", "chat-model"]]).to_string();
+        let mut limited = account(
+            "limited",
+            "codex",
+            &["limited-model"],
+            serde_json::json!({}),
+        );
+        limited.quota_json = Some(
+            serde_json::json!({
+                "version": 1, "exceeded": true, "reason": "quota", "next_recover_at": null
+            })
+            .to_string(),
+        );
+        let accounts = vec![
+            limited,
+            account(
+                "unknown",
+                "unknown",
+                &["unknown-model"],
+                serde_json::json!({}),
+            ),
+            account(
+                "codex",
+                "codex",
+                &["gpt-5"],
+                serde_json::json!({"broken-alias": "missing-model"}),
+            ),
+        ];
+        assert_eq!(
+            collect_api_key_answer_models(
+                &key(&[], &[], &[], &[]),
+                &[channel],
+                &accounts,
+                &feature_flags::FeatureFlags::all_on(),
+            ),
+            vec!["chat-model", "gpt-5"]
+        );
     }
 
     #[test]
@@ -5044,6 +5390,7 @@ mod list_models_tests {
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
         let repo = Repository::new(pool.clone());
         repo.create_channel(&CreateChannelInput {
+            test_models: None,
             model_mapping_disabled: None,
             // v0.3.3 为该结构体新增了自定义请求头字段，测试构造点需同步补齐。
             request_headers: None,

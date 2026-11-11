@@ -34,9 +34,41 @@ import {
 } from "lucide-react";
 import { ChannelForm } from "../components/ChannelForm";
 import { ImportDialog } from "../components/ImportDialog";
+import { MappingChips } from "../components/MappingChips";
 import { ChannelTabs } from "../components/layout/ChannelTabs";
 import { writeClipboard } from "../lib/runtime";
 import { buildChannelCurl } from "../lib/curl";
+
+/** Key 启用/停用状态胶囊：主 Key 与额外 Keys 共用同一组件，保证样式永远一致。 */
+function KeyStatusPill({
+  enabled,
+  loading,
+  onToggle,
+}: {
+  enabled: boolean;
+  loading: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={loading}
+      className="shrink-0 transition-colors disabled:opacity-50"
+      title={enabled ? "停用（不参与负载均衡）" : "启用"}
+    >
+      {loading ? (
+        <Loader2 size={11} className="animate-spin" />
+      ) : (
+        <span
+          className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none ${enabled ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}
+        >
+          <Power size={9} />
+          {enabled ? "启用" : "已停用"}
+        </span>
+      )}
+    </button>
+  );
+}
 
 export function ChannelsPage() {
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -245,6 +277,83 @@ export function ChannelsPage() {
     }
   };
 
+  // 主 Key 是否参与调度：api_key_enabled（迁移 044，缺省 = 启用）
+  const primaryKeyEnabled = (ch: Channel) => (ch.api_key_enabled ?? 1) !== 0;
+
+  // 主 Key 启用/禁用（迁移 044 窄列更新，不触碰渠道身份）：乐观更新 + 失败回滚
+  const [primaryKeyLoading, setPrimaryKeyLoading] = useState<string | null>(
+    null,
+  );
+  const handleTogglePrimaryKey = async (ch: Channel) => {
+    const nextEnabled = !primaryKeyEnabled(ch);
+    setPrimaryKeyLoading(ch.id);
+    setChannels((prev) =>
+      prev.map((c) =>
+        c.id === ch.id ? { ...c, api_key_enabled: nextEnabled ? 1 : 0 } : c,
+      ),
+    );
+    try {
+      await channelApi.togglePrimaryKey(ch.id, nextEnabled);
+    } catch (e) {
+      setChannels((prev) =>
+        prev.map((c) =>
+          c.id === ch.id ? { ...c, api_key_enabled: nextEnabled ? 0 : 1 } : c,
+        ),
+      );
+      console.error("Failed to toggle primary key:", e);
+      setActionError(`切换主 Key 状态失败: ${String(e)}`);
+    } finally {
+      setPrimaryKeyLoading(null);
+    }
+  };
+
+  // 额外 Key 启用/禁用（迁移 023 status 字段）：乐观更新 + 失败回滚
+  const [extraKeyToggleLoading, setExtraKeyToggleLoading] = useState<
+    string | null
+  >(null);
+  const handleSetExtraKeyStatus = async (
+    ch: Channel,
+    keyId: string,
+    enable: boolean,
+  ) => {
+    const next = enable ? 1 : 0;
+    const rollback = () =>
+      setChannels((prev) =>
+        prev.map((c) =>
+          c.id === ch.id
+            ? {
+                ...c,
+                extra_keys: (c.extra_keys ?? []).map((k) =>
+                  k.id === keyId ? { ...k, status: enable ? 0 : 1 } : k,
+                ),
+              }
+            : c,
+        ),
+      );
+    setExtraKeyToggleLoading(keyId);
+    setChannels((prev) =>
+      prev.map((c) =>
+        c.id === ch.id
+          ? {
+              ...c,
+              extra_keys: (c.extra_keys ?? []).map((k) =>
+                k.id === keyId ? { ...k, status: next } : k,
+              ),
+            }
+          : c,
+      ),
+    );
+    try {
+      await channelApi.toggleExtraKey(keyId, next);
+    } catch (e) {
+      rollback();
+      console.error("Failed to toggle extra key status:", e);
+      setActionError(`切换 Key 状态失败: ${String(e)}`);
+    } finally {
+      setExtraKeyToggleLoading(null);
+    }
+  };
+
   // 复制 API Key
   const handleCopyModel = async (model: string) => {
     try {
@@ -357,7 +466,7 @@ export function ChannelsPage() {
                 {exporting ? (
                   <Loader2 size={16} className="animate-spin" />
                 ) : (
-                  <Download size={16} />
+                  <Upload size={16} />
                 )}
                 导出
               </button>
@@ -366,7 +475,7 @@ export function ChannelsPage() {
                   onClick={() => setShowImportMenu(!showImportMenu)}
                   className="action-secondary flex items-center gap-1.5"
                 >
-                  <Upload size={16} />
+                  <Download size={16} />
                   导入
                   <ChevronDown
                     size={14}
@@ -532,19 +641,28 @@ export function ChannelsPage() {
                           className="font-semibold tabular-nums"
                           style={{
                             color:
-                              (stats.success_calls / stats.total_calls) * 100 >=
-                              95
+                              (stats.success_calls + stats.failed_calls > 0
+                                ? (stats.success_calls /
+                                    (stats.success_calls +
+                                      stats.failed_calls)) *
+                                  100
+                                : 0) >= 95
                                 ? "#10b981"
-                                : (stats.success_calls / stats.total_calls) *
-                                      100 >=
-                                    80
+                                : (stats.success_calls + stats.failed_calls > 0
+                                      ? (stats.success_calls /
+                                          (stats.success_calls +
+                                            stats.failed_calls)) *
+                                        100
+                                      : 0) >= 80
                                   ? "#f59e0b"
                                   : "#ef4444",
                           }}
                         >
-                          {(
-                            (stats.success_calls / stats.total_calls) *
-                            100
+                          {(stats.success_calls + stats.failed_calls > 0
+                            ? (stats.success_calls /
+                                (stats.success_calls + stats.failed_calls)) *
+                              100
+                            : 0
                           ).toFixed(0)}
                           %
                         </span>
@@ -698,73 +816,20 @@ export function ChannelsPage() {
                       </div>
                     </div>
 
-                    {/* 映射模型 */}
+                    {/* 映射模型（与 Auth 账号共用 MappingChips，样式/交互一致） */}
                     {ch.model_mapping &&
                       Object.keys(ch.model_mapping).length > 0 && (
                         <div>
                           <div className="mb-1.5 text-xs font-semibold text-slate-500">
                             映射模型
                           </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {Object.entries(ch.model_mapping).flatMap(
-                              ([name, target]) => {
-                                const targets = Array.isArray(target)
-                                  ? target
-                                  : [target];
-                                return targets.map((t) => {
-                                  const isOff = (
-                                    ch.model_mapping_disabled ?? []
-                                  ).some((d) => d[0] === name && d[1] === t);
-                                  return (
-                                    <div
-                                      key={`${name}→${t}`}
-                                      className={`inline-flex items-center gap-1 rounded-full py-0 pl-1.5 pr-1 text-[11px] font-medium leading-5 transition-all ${
-                                        isOff
-                                          ? "bg-slate-100 text-slate-400"
-                                          : "bg-violet-50 text-violet-700"
-                                      }`}
-                                    >
-                                      <button
-                                        onClick={() => handleCopyModel(name)}
-                                        className={`transition-all active:scale-95 ${isOff ? "line-through decoration-slate-300" : "hover:text-violet-900"}`}
-                                        title="点击复制映射名"
-                                      >
-                                        {name} → {t}
-                                        {copiedModel === name && (
-                                          <Check
-                                            size={9}
-                                            className="ml-0.5 inline text-emerald-500"
-                                          />
-                                        )}
-                                      </button>
-                                      <button
-                                        onClick={() =>
-                                          handleToggleMapping(
-                                            ch,
-                                            name,
-                                            t,
-                                            isOff,
-                                          )
-                                        }
-                                        className={`rounded-full p-0.5 transition-colors ${
-                                          isOff
-                                            ? "text-slate-400 hover:bg-slate-200 hover:text-emerald-600"
-                                            : "text-violet-400 hover:bg-violet-100 hover:text-red-500"
-                                        }`}
-                                        title={
-                                          isOff
-                                            ? "已关闭，点击开启"
-                                            : "已开启，点击关闭"
-                                        }
-                                      >
-                                        <Power size={10} />
-                                      </button>
-                                    </div>
-                                  );
-                                });
-                              },
-                            )}
-                          </div>
+                          <MappingChips
+                            mapping={ch.model_mapping}
+                            disabledPairs={ch.model_mapping_disabled}
+                            onToggle={(name, t, isOff) =>
+                              void handleToggleMapping(ch, name, t, isOff)
+                            }
+                          />
                         </div>
                       )}
 
@@ -775,6 +840,11 @@ export function ChannelsPage() {
                           API Key
                         </span>
                         <div className="flex items-center gap-1">
+                          <KeyStatusPill
+                            enabled={primaryKeyEnabled(ch)}
+                            loading={primaryKeyLoading === ch.id}
+                            onToggle={() => handleTogglePrimaryKey(ch)}
+                          />
                           <button
                             onClick={() => handleCopyKey(ch)}
                             className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
@@ -802,14 +872,21 @@ export function ChannelsPage() {
                           </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600">
+                      <div
+                        className={`flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600 ${primaryKeyEnabled(ch) ? "" : "opacity-60"}`}
+                      >
                         <span className="truncate">
                           {keyVisible
                             ? fullKeyMap[ch.id] || ch.api_key
-                            : `${ch.api_key.slice(0, 8)}${"•".repeat(12)}`}
+                            : ch.api_key}
                         </span>
+                        {!primaryKeyEnabled(ch) && (
+                          <span className="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 font-sans text-[10px] text-slate-400">
+                            已停用
+                          </span>
+                        )}
                         {keyVisible && fullKeyMap[ch.id] && (
-                          <span className="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">
+                          <span className="shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 font-sans text-[10px] text-slate-500">
                             {fullKeyMap[ch.id].length} chars
                           </span>
                         )}
@@ -836,10 +913,11 @@ export function ChannelsPage() {
                           {ch.extra_keys.map((ek, ekIdx) => {
                             const ekVisible = extraKeyVisibleMap[ek.id];
                             const ekFull = extraKeyFullMap[ek.id];
+                            const ekEnabled = ek.status === 1;
                             return (
                               <div
                                 key={ek.id}
-                                className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600"
+                                className={`flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-mono text-slate-600 ${ekEnabled ? "" : "opacity-60"}`}
                               >
                                 <span className="shrink-0 text-slate-400">
                                   #{ekIdx + 2}
@@ -847,7 +925,7 @@ export function ChannelsPage() {
                                 <span className="truncate">
                                   {ekVisible
                                     ? ekFull || ek.api_key
-                                    : `${ek.api_key.slice(0, 8)}${"•".repeat(12)}`}
+                                    : ek.api_key}
                                 </span>
                                 <button
                                   onClick={() => handleToggleExtraKey(ek.id)}
@@ -869,17 +947,25 @@ export function ChannelsPage() {
                                 <span className="ml-auto shrink-0 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-500">
                                   w:{ek.weight}
                                 </span>
-                                <span
-                                  className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${ek.status === 1 ? "bg-emerald-100 text-emerald-600" : "bg-slate-200 text-slate-400"}`}
-                                >
-                                  {ek.status === 1 ? "启用" : "禁用"}
-                                </span>
+                                <KeyStatusPill
+                                  enabled={ekEnabled}
+                                  loading={extraKeyToggleLoading === ek.id}
+                                  onToggle={() =>
+                                    handleSetExtraKeyStatus(
+                                      ch,
+                                      ek.id,
+                                      !ekEnabled,
+                                    )
+                                  }
+                                />
                               </div>
                             );
                           })}
                         </div>
                         <p className="mt-1 text-[11px] text-slate-400">
-                          主 Key + 额外 Keys 按权重负载均衡，失效 Key 自动降级
+                          主 Key + 额外 Keys
+                          按权重负载均衡，点击右侧状态可停用/启用，失效 Key
+                          自动降级
                         </p>
                       </div>
                     )}
@@ -888,7 +974,11 @@ export function ChannelsPage() {
                     {stats && stats.total_calls > 0 ? (
                       (() => {
                         const successRate =
-                          (stats.success_calls / stats.total_calls) * 100;
+                          stats.success_calls + stats.failed_calls > 0
+                            ? (stats.success_calls /
+                                (stats.success_calls + stats.failed_calls)) *
+                              100
+                            : 0;
                         const rateColor =
                           successRate >= 95
                             ? "#10b981"

@@ -33,8 +33,8 @@ pub fn resolve_data_dir(explicit: Option<String>) -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
-    // 与 tauri app_data_dir 对齐：$WT_DATA_HOME/<identifier>（Docker 中即 /data/<identifier>）
-    let base = std::env::var("WT_DATA_HOME")
+    // 与 tauri app_data_dir 对齐：$XDG_DATA_HOME/<identifier>（Docker 中即 /data/<identifier>）
+    let base = std::env::var("XDG_DATA_HOME")
         .ok()
         .filter(|v| !v.trim().is_empty());
     if let Some(base) = base {
@@ -107,13 +107,23 @@ pub async fn run(cfg: WebServerConfig) -> Result<(), String> {
         )),
         admin_sessions: server::admin_auth::SessionStore::new(),
         login_throttle: server::admin_auth::LoginThrottle::new(),
-        events: server::event_bridge::EventSink::headless(event_tx),
+        events: server::event_bridge::EventSink::headless(event_tx.clone()),
         settings: settings_store::SettingsStore::file(settings_store::default_settings_path(
             &data_dir,
         )),
         data_dir,
+        app_handle: Arc::new(RwLock::new(None)),
     });
 
+    // 注册全局网关事件出口（路由总览页的粒子动画数据源）。
+    server::event_bridge::register_gateway_sink(server::event_bridge::EventSink::headless(
+        event_tx,
+    ));
+
+    // Prompt 模板种子（C-07）：空表时写入源码字面量 v1——升级后行为逐字节不变
+    if let Err(error) = crate::prompt_templates::seed_if_empty(&state.db.pool).await {
+        tracing::warn!("[模板] 种子写入失败（运行时回退编译期默认）: {error}");
+    }
     crate::audit_log::apply_settings(&state.settings);
     // 全局出站代理（VPN 固定端口）：启动时从设置加载。
     {
@@ -122,6 +132,12 @@ pub async fn run(cfg: WebServerConfig) -> Result<(), String> {
         crate::adaptor::set_global_proxy(enabled.then_some(url));
     }
     tauri::async_runtime::spawn(crate::audit_log::run_maintenance_loop(
+        state.db.pool.clone(),
+        state.settings.clone(),
+    ));
+
+    // OTLP 导出（默认关闭，开启后按 seq 游标增量导出 request_log）
+    tauri::async_runtime::spawn(crate::otlp_exporter::run_export_loop(
         state.db.pool.clone(),
         state.settings.clone(),
     ));

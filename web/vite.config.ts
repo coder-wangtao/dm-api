@@ -5,12 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const shim = (name: string) => path.resolve(__dirname, "src/lib", name);
 
 // Web 管理面板构建：复用 ../src 全部页面与组件，仅把 Tauri API 替换为 HTTP 实现。
-//Web 管理面板不重新写页面，而是直接复用原来 Tauri 项目的 React 页面和组件；
-// 唯一需要改变的是 Tauri API，通过 shim 把它们替换成浏览器可以使用的 HTTP API。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   publicDir: path.resolve(__dirname, "../public"),
@@ -20,19 +17,12 @@ export default defineConfig({
       { find: "@app", replacement: path.resolve(__dirname, "../src") },
       // Tauri API → Web shim
       { find: "@tauri-apps/api/core", replacement: shim("tauri-shim.ts") },
-      {
-        find: "@tauri-apps/api/event",
-        replacement: shim("tauri-event-shim.ts"),
-      },
+      { find: "@tauri-apps/api/event", replacement: shim("tauri-event-shim.ts") },
       { find: "@tauri-apps/api/app", replacement: shim("tauri-app-shim.ts") },
-      {
-        find: "@tauri-apps/plugin-opener",
-        replacement: shim("plugin-opener-shim.ts"),
-      },
-      {
-        find: "@tauri-apps/plugin-dialog",
-        replacement: shim("plugin-dialog-shim.ts"),
-      },
+      { find: "@tauri-apps/plugin-opener", replacement: shim("plugin-opener-shim.ts") },
+      { find: "@tauri-apps/plugin-dialog", replacement: shim("plugin-dialog-shim.ts") },
+      { find: "@tauri-apps/plugin-updater", replacement: shim("plugin-updater-shim.ts") },
+      { find: "@tauri-apps/plugin-process", replacement: shim("plugin-process-shim.ts") },
     ],
   },
   server: {
@@ -48,7 +38,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true, //清空原来的 dist
-    chunkSizeWarningLimit: 2048, //如果某个 JS chunk 超过大约 2 MB，Vite 会给你一个警告
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 2048,
   },
 });

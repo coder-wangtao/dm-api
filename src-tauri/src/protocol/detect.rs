@@ -1,7 +1,6 @@
 use serde_json::Value;
 
 /// Extract API key from either `Authorization: Bearer xxx` or `x-api-key: xxx` header.
-/// 提取请求头中的 API Key。
 pub fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
     // Try Authorization: Bearer xxx first
     if let Some(auth) = headers.get("authorization").and_then(|h| h.to_str().ok()) {
@@ -23,7 +22,6 @@ pub fn extract_api_key(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 /// Detect if a request is in Anthropic format by checking headers and body.
-/// 判断请求是否采用 Anthropic（Claude）API 格式。
 #[allow(dead_code)]
 pub fn is_anthropic_request(headers: &axum::http::HeaderMap, body: &Value) -> bool {
     // Check for anthropic-version header
@@ -43,7 +41,6 @@ pub fn is_anthropic_request(headers: &axum::http::HeaderMap, body: &Value) -> bo
 }
 
 /// Detect if a request targets the Responses API format.
-/// 判断请求是否采用 OpenAI Responses API 格式。
 #[allow(dead_code)]
 pub fn is_responses_request(body: &Value) -> bool {
     // Responses API uses "input" instead of "messages"
