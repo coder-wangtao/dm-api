@@ -1,5 +1,6 @@
 -- ═══════════════════════════════════════════════════════
 -- 知识库表：新增分块/过滤配置 + 索引状态
+-- 知识库：新增分块/过滤配置 + 索引状态
 -- ═══════════════════════════════════════════════════════
 ALTER TABLE kb_knowledge_bases ADD COLUMN chunk_size INTEGER NOT NULL DEFAULT 512;
 ALTER TABLE kb_knowledge_bases ADD COLUMN chunk_overlap INTEGER NOT NULL DEFAULT 64;

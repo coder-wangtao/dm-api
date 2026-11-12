@@ -11,8 +11,8 @@ pub struct SplitConfig {
 impl Default for SplitConfig {
     fn default() -> Self {
         Self {
-            chunk_size: 512,
-            chunk_overlap: 64,
+            chunk_size: 512,// 每个分块目标包含约 512 个 token
+            chunk_overlap: 64, // 相邻分块重叠约 64 个 token，确保检索时不会遗漏跨分块的语义
         }
     }
 }

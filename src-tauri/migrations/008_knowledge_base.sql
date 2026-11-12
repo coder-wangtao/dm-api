@@ -1,6 +1,6 @@
 -- Knowledge Base tables
 
--- 知识库
+-- 知识库：一个知识库对应一个主题/项目
 CREATE TABLE IF NOT EXISTS kb_knowledge_bases (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS kb_knowledge_bases (
     updated_at    TEXT NOT NULL
 );
 
--- 文档
+-- 文档：上传的每个文件是一条记录
 CREATE TABLE IF NOT EXISTS kb_documents (
     id            TEXT PRIMARY KEY,
     kb_id         TEXT NOT NULL,
@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_kb ON kb_documents(kb_id);
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON kb_documents(content_hash);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON kb_documents(status);
 
--- 文档切片 + 向量
+-- 切片：文档被分块后的最小检索单元
 CREATE TABLE IF NOT EXISTS kb_chunks (
     id             TEXT PRIMARY KEY,
     doc_id         TEXT NOT NULL,

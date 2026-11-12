@@ -1,6 +1,6 @@
 -- Wiki Module tables
 
--- Wiki 项目
+-- Wiki 项目：一个项目对应一个知识主题
 CREATE TABLE IF NOT EXISTS wiki_projects (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS wiki_projects (
     updated_at    TEXT NOT NULL
 );
 
--- Wiki 页面
+-- Wiki 页面：结构化 Markdown，含 frontmatter/标签/wikilinks
 CREATE TABLE IF NOT EXISTS wiki_pages (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS wiki_pages (
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_project ON wiki_pages(project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_pages_type ON wiki_pages(project_id, page_type);
 
--- Wiki 源资料记录
+-- Wiki 源资料：待摄入的原始文档
 CREATE TABLE IF NOT EXISTS wiki_sources (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS wiki_sources (
 
 CREATE INDEX IF NOT EXISTS idx_wiki_sources_project ON wiki_sources(project_id);
 
--- 摄入任务队列
+-- 摄入任务队列：异步摄入进度追踪
 CREATE TABLE IF NOT EXISTS wiki_ingest_queue (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS wiki_ingest_queue (
 CREATE INDEX IF NOT EXISTS idx_wiki_queue_project ON wiki_ingest_queue(project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_queue_status ON wiki_ingest_queue(status);
 
--- 审核项
+-- 审阅项：摄入过程中标记的待人工确认内容
 CREATE TABLE IF NOT EXISTS wiki_reviews (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS wiki_reviews (
 CREATE INDEX IF NOT EXISTS idx_wiki_reviews_project ON wiki_reviews(project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_reviews_resolved ON wiki_reviews(project_id, resolved);
 
--- Wiki 会话历史
+-- Wiki 会话历史：问答上下文
 CREATE TABLE IF NOT EXISTS wiki_sessions (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS wiki_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_wiki_sessions_project ON wiki_sessions(project_id);
 
--- 知识图谱边
+-- 知识图谱边：页面间 wikilinks 关联
 CREATE TABLE IF NOT EXISTS wiki_graph_edges (
     id            TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL,
@@ -133,3 +133,5 @@ CREATE TABLE IF NOT EXISTS wiki_graph_edges (
 
 CREATE INDEX IF NOT EXISTS idx_wiki_edges_project ON wiki_graph_edges(project_id);
 CREATE INDEX IF NOT EXISTS idx_wiki_edges_source ON wiki_graph_edges(project_id, source_page);
+
+
